@@ -24,7 +24,7 @@ func TestDefaultDenyNetworkPolicy(t *testing.T) {
 	ingress := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
 
 	withWorkload := func(policies ...networkingv1.NetworkPolicy) *snapshot.Snapshot {
-		snap := snapshotOf(podSpec(secureContainer("api")))
+		snap := snapshotOf(podSpec(secureContainer(testContainer)))
 		snap.NetworkPolicies = policies
 		return snap
 	}
@@ -37,7 +37,7 @@ func TestDefaultDenyNetworkPolicy(t *testing.T) {
 		{"no policies at all", withWorkload(), 1},
 		{"default deny present", withWorkload(policy("deny", metav1.LabelSelector{}, ingress, nil)), 0},
 		{"targeted policy only", withWorkload(policy("api", metav1.LabelSelector{
-			MatchLabels: map[string]string{"app": "api"},
+			MatchLabels: map[string]string{"app": testContainer},
 		}, ingress, nil)), 1},
 		{"empty selector but allows traffic", withWorkload(policy("allow", metav1.LabelSelector{}, ingress,
 			[]networkingv1.NetworkPolicyIngressRule{{}})), 1},

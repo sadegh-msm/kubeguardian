@@ -16,7 +16,7 @@ func TestPodSecurityAdmissionLabels(t *testing.T) {
 		snap *snapshot.Snapshot
 		want int
 	}{
-		{"restricted enforced", withLabels(map[string]string{podSecurityEnforceLabel: "restricted"}), 0},
+		{"restricted enforced", withLabels(map[string]string{podSecurityEnforceLabel: enforceRestricted}), 0},
 		{"baseline enforced", withLabels(map[string]string{podSecurityEnforceLabel: "baseline"}), 0},
 		{"label absent", withLabels(nil), 1},
 		{"privileged enforced", withLabels(map[string]string{podSecurityEnforceLabel: "privileged"}), 1},

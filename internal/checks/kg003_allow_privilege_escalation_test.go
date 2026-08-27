@@ -7,10 +7,10 @@ import (
 )
 
 func TestAllowPrivilegeEscalation(t *testing.T) {
-	unset := secureContainer("api")
+	unset := secureContainer(testContainer)
 	unset.SecurityContext.AllowPrivilegeEscalation = nil
 
-	allowed := secureContainer("api")
+	allowed := secureContainer(testContainer)
 	allowed.SecurityContext.AllowPrivilegeEscalation = ptr(true)
 
 	cases := []struct {
@@ -18,10 +18,10 @@ func TestAllowPrivilegeEscalation(t *testing.T) {
 		spec corev1.PodSpec
 		want int
 	}{
-		{"escalation denied", podSpec(secureContainer("api")), 0},
+		{"escalation denied", podSpec(secureContainer(testContainer)), 0},
 		{"field unset", podSpec(unset), 1},
 		{"escalation allowed", podSpec(allowed), 1},
-		{"no security context", podSpec(corev1.Container{Name: "api", Image: "app:1.0"}), 1},
+		{"no security context", podSpec(corev1.Container{Name: testContainer, Image: testImage}), 1},
 	}
 
 	check := newAllowPrivilegeEscalation()

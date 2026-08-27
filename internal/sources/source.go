@@ -2,7 +2,7 @@ package sources
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"strings"
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
@@ -30,15 +30,14 @@ func Normalize(findings []securityv1alpha1.Finding, minSeverity securityv1alpha1
 		filtered = append(filtered, finding)
 	}
 
-	sort.SliceStable(filtered, func(i, j int) bool {
-		left, right := filtered[i], filtered[j]
-		if left.Severity.Rank() != right.Severity.Rank() {
-			return left.Severity.Rank() < right.Severity.Rank()
+	slices.SortStableFunc(filtered, func(left, right securityv1alpha1.Finding) int {
+		if rank := left.Severity.Rank() - right.Severity.Rank(); rank != 0 {
+			return rank
 		}
 		if left.ID != right.ID {
-			return left.ID < right.ID
+			return strings.Compare(left.ID, right.ID)
 		}
-		return left.Resource.String() < right.Resource.String()
+		return strings.Compare(left.Resource.String(), right.Resource.String())
 	})
 
 	return filtered

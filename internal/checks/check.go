@@ -5,6 +5,11 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 )
 
+const (
+	referencePodSecurityStandards = "https://kubernetes.io/docs/concepts/security/pod-security-standards/"
+	referenceSecurityContext      = "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/"
+)
+
 type Check interface {
 	ID() string
 	Severity() securityv1alpha1.Severity

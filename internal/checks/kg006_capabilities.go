@@ -15,7 +15,7 @@ func newCapabilitiesNotDropped() capabilitiesNotDropped {
 		id:        "KG-006",
 		severity:  securityv1alpha1.SeverityMedium,
 		category:  securityv1alpha1.CategoryPodSecurity,
-		reference: "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+		reference: referencePodSecurityStandards,
 	}}
 }
 

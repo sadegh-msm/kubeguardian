@@ -8,10 +8,10 @@ import (
 )
 
 func TestMissingResourceLimits(t *testing.T) {
-	none := secureContainer("api")
+	none := secureContainer(testContainer)
 	none.Resources = corev1.ResourceRequirements{}
 
-	requestsOnly := secureContainer("api")
+	requestsOnly := secureContainer(testContainer)
 	requestsOnly.Resources = corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -24,7 +24,7 @@ func TestMissingResourceLimits(t *testing.T) {
 		spec corev1.PodSpec
 		want int
 	}{
-		{"requests and limits set", podSpec(secureContainer("api")), 0},
+		{"requests and limits set", podSpec(secureContainer(testContainer)), 0},
 		{"nothing set", podSpec(none), 1},
 		{"requests without memory limit", podSpec(requestsOnly), 1},
 		{"two offending containers", podSpec(none, requestsOnly), 2},

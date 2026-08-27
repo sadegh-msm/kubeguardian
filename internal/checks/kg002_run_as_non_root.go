@@ -14,7 +14,7 @@ func newRunAsNonRoot() runAsNonRoot {
 		id:        "KG-002",
 		severity:  securityv1alpha1.SeverityHigh,
 		category:  securityv1alpha1.CategoryPodSecurity,
-		reference: "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+		reference: referencePodSecurityStandards,
 	}}
 }
 

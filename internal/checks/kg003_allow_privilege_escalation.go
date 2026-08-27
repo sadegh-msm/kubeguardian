@@ -14,7 +14,7 @@ func newAllowPrivilegeEscalation() allowPrivilegeEscalation {
 		id:        "KG-003",
 		severity:  securityv1alpha1.SeverityHigh,
 		category:  securityv1alpha1.CategoryPodSecurity,
-		reference: "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+		reference: referencePodSecurityStandards,
 	}}
 }
 

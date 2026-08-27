@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"slices"
 
 	networkingv1 "k8s.io/api/networking/v1"
 
@@ -24,10 +25,8 @@ func (c defaultDenyNetworkPolicy) Run(snap *snapshot.Snapshot) []securityv1alpha
 	if len(snap.Workloads()) == 0 {
 		return nil
 	}
-	for _, policy := range snap.NetworkPolicies {
-		if isDefaultDenyIngress(policy) {
-			return nil
-		}
+	if slices.ContainsFunc(snap.NetworkPolicies, isDefaultDenyIngress) {
+		return nil
 	}
 	return []securityv1alpha1.Finding{c.finding(
 		namespaceRef(snap),
@@ -52,10 +51,5 @@ func isDefaultDenyIngress(policy networkingv1.NetworkPolicy) bool {
 	if len(policy.Spec.Ingress) > 0 {
 		return false
 	}
-	for _, policyType := range policy.Spec.PolicyTypes {
-		if policyType == networkingv1.PolicyTypeIngress {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(policy.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
 }

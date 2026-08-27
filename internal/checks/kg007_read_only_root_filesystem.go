@@ -14,7 +14,7 @@ func newWritableRootFilesystem() writableRootFilesystem {
 		id:        "KG-007",
 		severity:  securityv1alpha1.SeverityMedium,
 		category:  securityv1alpha1.CategoryPodSecurity,
-		reference: "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+		reference: referenceSecurityContext,
 	}}
 }
 

@@ -7,16 +7,16 @@ import (
 )
 
 func TestCapabilitiesNotDropped(t *testing.T) {
-	noCapabilities := secureContainer("api")
+	noCapabilities := secureContainer(testContainer)
 	noCapabilities.SecurityContext.Capabilities = nil
 
-	addsBack := secureContainer("api")
+	addsBack := secureContainer(testContainer)
 	addsBack.SecurityContext.Capabilities = &corev1.Capabilities{
 		Drop: []corev1.Capability{"ALL"},
 		Add:  []corev1.Capability{"NET_BIND_SERVICE"},
 	}
 
-	dropsLowercase := secureContainer("api")
+	dropsLowercase := secureContainer(testContainer)
 	dropsLowercase.SecurityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"all"}}
 
 	cases := []struct {
@@ -24,7 +24,7 @@ func TestCapabilitiesNotDropped(t *testing.T) {
 		spec corev1.PodSpec
 		want int
 	}{
-		{"drops all capabilities", podSpec(secureContainer("api")), 0},
+		{"drops all capabilities", podSpec(secureContainer(testContainer)), 0},
 		{"keeps default capability set", podSpec(noCapabilities), 1},
 		{"drops all then adds back", podSpec(addsBack), 1},
 		{"lowercase all is honoured", podSpec(dropsLowercase), 0},

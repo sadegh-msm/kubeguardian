@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -56,10 +57,5 @@ func wildcardFields(rule rbacv1.PolicyRule) []string {
 }
 
 func containsWildcard(values []string) bool {
-	for _, value := range values {
-		if value == "*" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, "*")
 }

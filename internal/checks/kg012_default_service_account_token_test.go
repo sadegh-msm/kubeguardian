@@ -9,9 +9,9 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 )
 
-func serviceAccount(name string, automount *bool) corev1.ServiceAccount {
+func defaultServiceAccount(automount *bool) corev1.ServiceAccount {
 	return corev1.ServiceAccount{
-		ObjectMeta:                   metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		ObjectMeta:                   metav1.ObjectMeta{Name: defaultServiceAccountName, Namespace: testNamespace},
 		AutomountServiceAccountToken: automount,
 	}
 }
@@ -23,10 +23,10 @@ func TestDefaultServiceAccountToken(t *testing.T) {
 		return snap
 	}
 
-	base := podSpec(secureContainer("api"))
+	base := podSpec(secureContainer(testContainer))
 
 	dedicated := base
-	dedicated.ServiceAccountName = "api"
+	dedicated.ServiceAccountName = testContainer
 
 	optedOut := base
 	optedOut.AutomountServiceAccountToken = ptr(false)
@@ -36,10 +36,10 @@ func TestDefaultServiceAccountToken(t *testing.T) {
 		snap *snapshot.Snapshot
 		want int
 	}{
-		{"default account automounts", build(base, serviceAccount("default", nil)), 1},
-		{"default account opts out", build(base, serviceAccount("default", ptr(false))), 0},
-		{"workload opts out", build(optedOut, serviceAccount("default", nil)), 0},
-		{"workload uses dedicated account", build(dedicated, serviceAccount("default", nil)), 0},
+		{"default account automounts", build(base, defaultServiceAccount(nil)), 1},
+		{"default account opts out", build(base, defaultServiceAccount(ptr(false))), 0},
+		{"workload opts out", build(optedOut, defaultServiceAccount(nil)), 0},
+		{"workload uses dedicated account", build(dedicated, defaultServiceAccount(nil)), 0},
 		{"account object not collected", build(base), 1},
 	}
 

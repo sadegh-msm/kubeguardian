@@ -7,25 +7,25 @@ import (
 )
 
 func TestPrivilegedContainer(t *testing.T) {
-	privileged := secureContainer("api")
+	privileged := secureContainer(testContainer)
 	privileged.SecurityContext.Privileged = ptr(true)
 
 	initPrivileged := secureContainer("migrate")
 	initPrivileged.SecurityContext.Privileged = ptr(true)
 
-	noSecurityContext := corev1.Container{Name: "api", Image: "app:1.0"}
+	noSecurityContext := corev1.Container{Name: testContainer, Image: testImage}
 
 	cases := []struct {
 		name string
 		spec corev1.PodSpec
 		want int
 	}{
-		{"compliant container", podSpec(secureContainer("api")), 0},
+		{"compliant container", podSpec(secureContainer(testContainer)), 0},
 		{"privileged container", podSpec(privileged), 1},
 		{"absent security context", podSpec(noSecurityContext), 0},
 		{"privileged init container", corev1.PodSpec{
 			InitContainers: []corev1.Container{initPrivileged},
-			Containers:     []corev1.Container{secureContainer("api")},
+			Containers:     []corev1.Container{secureContainer(testContainer)},
 		}, 1},
 	}
 

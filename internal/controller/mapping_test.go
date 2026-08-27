@@ -10,6 +10,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const mappingNamespace = "demo"
+
 func TestMapToNamespace(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -23,12 +25,12 @@ func TestMapToNamespace(t *testing.T) {
 		},
 		{
 			name:   "service account maps to its namespace",
-			object: &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "demo"}},
-			want:   "demo",
+			object: &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: mappingNamespace}},
+			want:   mappingNamespace,
 		},
 		{
 			name:   "cluster scoped object produces no request",
-			object: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "demo"}},
+			object: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: mappingNamespace}},
 			want:   "",
 		},
 	}

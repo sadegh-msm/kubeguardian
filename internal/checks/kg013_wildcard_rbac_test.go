@@ -34,7 +34,7 @@ func TestWildcardRBAC(t *testing.T) {
 	}
 
 	build := func(roles ...rbacv1.Role) *snapshot.Snapshot {
-		snap := snapshotOf(podSpec(secureContainer("api")))
+		snap := snapshotOf(podSpec(secureContainer(testContainer)))
 		snap.Roles = roles
 		return snap
 	}

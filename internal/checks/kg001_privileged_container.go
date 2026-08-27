@@ -14,7 +14,7 @@ func newPrivilegedContainer() privilegedContainer {
 		id:        "KG-001",
 		severity:  securityv1alpha1.SeverityCritical,
 		category:  securityv1alpha1.CategoryPodSecurity,
-		reference: "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+		reference: referencePodSecurityStandards,
 	}}
 }
 

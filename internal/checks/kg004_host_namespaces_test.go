@@ -7,7 +7,7 @@ import (
 )
 
 func TestHostNamespaces(t *testing.T) {
-	base := podSpec(secureContainer("api"))
+	base := podSpec(secureContainer(testContainer))
 
 	hostNetwork := base
 	hostNetwork.HostNetwork = true

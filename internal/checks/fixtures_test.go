@@ -10,7 +10,12 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 )
 
-const testNamespace = "demo"
+const (
+	testNamespace     = "demo"
+	testContainer     = "api"
+	enforceRestricted = "restricted"
+	testImage         = "app:1.0"
+)
 
 func ptr[T any](value T) *T {
 	return &value
@@ -31,7 +36,7 @@ func deployment(name string, spec corev1.PodSpec) appsv1.Deployment {
 
 func snapshotOf(spec corev1.PodSpec) *snapshot.Snapshot {
 	return &snapshot.Snapshot{
-		Namespace:   namespace(map[string]string{podSecurityEnforceLabel: "restricted"}),
+		Namespace:   namespace(map[string]string{podSecurityEnforceLabel: enforceRestricted}),
 		Deployments: []appsv1.Deployment{deployment("api", spec)},
 	}
 }

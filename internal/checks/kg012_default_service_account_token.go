@@ -9,6 +9,8 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 )
 
+const defaultServiceAccountName = "default"
+
 type defaultServiceAccountToken struct{ meta }
 
 func newDefaultServiceAccountToken() defaultServiceAccountToken {
@@ -24,7 +26,7 @@ func (c defaultServiceAccountToken) Run(snap *snapshot.Snapshot) []securityv1alp
 	var users []string
 	for _, workload := range snap.Workloads() {
 		name := workload.Template.Spec.ServiceAccountName
-		if name != "" && name != "default" {
+		if name != "" && name != defaultServiceAccountName {
 			continue
 		}
 		if automount := workload.Template.Spec.AutomountServiceAccountToken; automount != nil && !*automount {
@@ -36,14 +38,14 @@ func (c defaultServiceAccountToken) Run(snap *snapshot.Snapshot) []securityv1alp
 		return nil
 	}
 
-	if account, found := findServiceAccount(snap, "default"); found {
+	if account, found := findServiceAccount(snap, defaultServiceAccountName); found {
 		if automount := account.AutomountServiceAccountToken; automount != nil && !*automount {
 			return nil
 		}
 	}
 
 	return []securityv1alpha1.Finding{c.finding(
-		securityv1alpha1.ResourceRef{Kind: "ServiceAccount", Name: "default"},
+		securityv1alpha1.ResourceRef{Kind: "ServiceAccount", Name: defaultServiceAccountName},
 		fmt.Sprintf("the default ServiceAccount automounts an API token into %d workload(s) (%s) that do not appear to need API access", len(users), users[0]),
 		"Disable automounting on the default ServiceAccount, and give workloads that do call the API their own ServiceAccount with a scoped Role.",
 		fmt.Sprintf("kubectl patch serviceaccount default -n %s -p '{\"automountServiceAccountToken\":false}'", snap.Name()),

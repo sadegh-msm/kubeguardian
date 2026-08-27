@@ -7,7 +7,7 @@ import (
 )
 
 func TestHostPathVolume(t *testing.T) {
-	base := podSpec(secureContainer("api"))
+	base := podSpec(secureContainer(testContainer))
 
 	withHostPath := base
 	withHostPath.Volumes = []corev1.Volume{{

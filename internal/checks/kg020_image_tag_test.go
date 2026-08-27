@@ -8,7 +8,7 @@ import (
 
 func TestMutableImageTag(t *testing.T) {
 	withImage := func(image string) corev1.PodSpec {
-		container := secureContainer("api")
+		container := secureContainer(testContainer)
 		container.Image = image
 		return podSpec(container)
 	}
