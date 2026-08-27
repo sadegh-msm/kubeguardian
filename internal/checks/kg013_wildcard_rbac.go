@@ -3,7 +3,6 @@ package checks
 import (
 	"fmt"
 	"slices"
-	"strings"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 
@@ -32,7 +31,7 @@ func (c wildcardRBAC) Run(snap *snapshot.Snapshot) []securityv1alpha1.Finding {
 			}
 			findings = append(findings, c.finding(
 				securityv1alpha1.ResourceRef{Kind: "Role", Name: role.Name},
-				fmt.Sprintf("Role %q grants a wildcard on %s, which silently expands as new resources and verbs are added to the cluster", role.Name, strings.Join(wildcards, " and ")),
+				fmt.Sprintf("Role %q grants a wildcard on %s, which silently expands as new resources and verbs are added to the cluster", role.Name, joinFields(wildcards)),
 				"Replace each wildcard with the explicit apiGroups, resources and verbs the subject needs. Use kubectl auth can-i --list to confirm nothing breaks.",
 				fmt.Sprintf("kubectl get role %s -n %s -o yaml", role.Name, snap.Name()),
 			))

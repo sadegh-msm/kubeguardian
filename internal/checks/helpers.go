@@ -102,3 +102,13 @@ func podPatch(kind, name, namespace, path, value string) string {
 		strings.ToLower(kind), name, namespace, path, value,
 	)
 }
+
+func joinFields(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}

@@ -67,6 +67,19 @@ func TestNormalizeIsStableAcrossRuns(t *testing.T) {
 	}
 }
 
+func TestNormalizeKeepsDistinctFindingsOnTheSameResource(t *testing.T) {
+	hostNetwork := finding("KG-004", securityv1alpha1.SeverityCritical, "Deployment", "api")
+	hostNetwork.Message = "hostNetwork is enabled"
+	hostPID := finding("KG-004", securityv1alpha1.SeverityCritical, "Deployment", "api")
+	hostPID.Message = "hostPID is enabled"
+
+	got := Normalize([]securityv1alpha1.Finding{hostNetwork, hostPID}, securityv1alpha1.SeverityLow)
+
+	if len(got) != 2 {
+		t.Fatalf("got %d findings, want 2 distinct findings on the same resource", len(got))
+	}
+}
+
 func TestNormalizeDropsDuplicates(t *testing.T) {
 	duplicate := finding("KG-001", securityv1alpha1.SeverityCritical, "Deployment", "api")
 	got := Normalize([]securityv1alpha1.Finding{duplicate, duplicate}, securityv1alpha1.SeverityLow)

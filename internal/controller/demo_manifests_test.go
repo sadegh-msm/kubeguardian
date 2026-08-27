@@ -71,6 +71,14 @@ var _ = Describe("Demo manifests", Ordered, func() {
 		report, err := demoReport()
 		Expect(err).NotTo(HaveOccurred())
 		insecureScore = report.Status.Score
+
+		hostNamespaceFindings := 0
+		for _, finding := range report.Status.Findings {
+			if finding.ID == "KG-004" {
+				hostNamespaceFindings++
+			}
+		}
+		Expect(hostNamespaceFindings).To(Equal(2))
 		Expect(insecureScore).To(Equal(0))
 	})
 

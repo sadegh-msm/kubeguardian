@@ -22,7 +22,7 @@ func Normalize(findings []securityv1alpha1.Finding, minSeverity securityv1alpha1
 		if !finding.Severity.AtLeast(minSeverity) {
 			continue
 		}
-		key := strings.Join([]string{finding.ID, finding.Resource.String(), finding.Source}, "|")
+		key := strings.Join([]string{finding.ID, finding.Resource.String(), finding.Source, finding.Message}, "|")
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}

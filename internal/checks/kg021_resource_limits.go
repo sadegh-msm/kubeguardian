@@ -2,7 +2,6 @@ package checks
 
 import (
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -40,7 +39,7 @@ func (c missingResourceLimits) Run(snap *snapshot.Snapshot) []securityv1alpha1.F
 			}
 			findings = append(findings, c.finding(
 				containerRef(workload, container),
-				fmt.Sprintf("container %q is missing %s, so it can starve neighbours on the node and makes the namespace a denial-of-service vector", container.Name, strings.Join(missing, " and ")),
+				fmt.Sprintf("container %q is missing %s, so it can starve neighbours on the node and makes the namespace a denial-of-service vector", container.Name, joinFields(missing)),
 				"Set both requests and limits. Requests drive scheduling and limits cap the blast radius of a runaway process.",
 				containerPatch(workload.Kind, workload.Name, snap.Name(), containerIndex(workload, container), "resources",
 					`{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"512Mi"}}`),
