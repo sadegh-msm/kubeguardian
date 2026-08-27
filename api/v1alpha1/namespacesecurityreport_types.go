@@ -5,38 +5,37 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+const (
+	ConditionScanSucceeded = "ScanSucceeded"
 
-// NamespaceSecurityReportSpec defines the desired state of NamespaceSecurityReport
+	ReasonScanCompleted = "ScanCompleted"
+	ReasonScanFailed    = "ScanFailed"
+)
+
 type NamespaceSecurityReportSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of NamespaceSecurityReport. Edit namespacesecurityreport_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	NamespaceRef string `json:"namespaceRef"`
 }
 
-// NamespaceSecurityReportStatus defines the observed state of NamespaceSecurityReport.
 type NamespaceSecurityReportStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	Score int `json:"score"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// +optional
+	Summary SeveritySummary `json:"summary,omitzero"`
 
-	// conditions represent the current state of the NamespaceSecurityReport resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// +optional
+	Findings []Finding `json:"findings,omitempty"`
+
+	// +optional
+	LastScanTime metav1.Time `json:"lastScanTime,omitzero"`
+
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -44,28 +43,29 @@ type NamespaceSecurityReportStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=nsr
 // +kubebuilder:subresource:status
-
-// NamespaceSecurityReport is the Schema for the namespacesecurityreports API
+// +kubebuilder:printcolumn:name="Score",type=integer,JSONPath=`.status.score`
+// +kubebuilder:printcolumn:name="Critical",type=integer,JSONPath=`.status.summary.critical`
+// +kubebuilder:printcolumn:name="High",type=integer,JSONPath=`.status.summary.high`
+// +kubebuilder:printcolumn:name="Medium",type=integer,JSONPath=`.status.summary.medium`
+// +kubebuilder:printcolumn:name="Low",type=integer,JSONPath=`.status.summary.low`
+// +kubebuilder:printcolumn:name="Last-Scan",type=date,JSONPath=`.status.lastScanTime`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type NamespaceSecurityReport struct {
 	metav1.TypeMeta `json:",inline"`
 
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of NamespaceSecurityReport
 	// +required
 	Spec NamespaceSecurityReportSpec `json:"spec"`
 
-	// status defines the observed state of NamespaceSecurityReport
 	// +optional
 	Status NamespaceSecurityReportStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
-
-// NamespaceSecurityReportList contains a list of NamespaceSecurityReport
 type NamespaceSecurityReportList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

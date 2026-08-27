@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -21,6 +23,8 @@ import (
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
 	"github.com/sadegh-msm/kubeguardian/internal/controller"
+	"github.com/sadegh-msm/kubeguardian/internal/sources"
+	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -46,6 +50,15 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var rescanInterval time.Duration
+	var minSeverity string
+	var excludedNamespaces string
+	flag.DurationVar(&rescanInterval, "rescan-interval", 10*time.Minute,
+		"How often every namespace is rescanned even when no workload event arrives.")
+	flag.StringVar(&minSeverity, "min-severity", string(securityv1alpha1.SeverityLow),
+		"Lowest severity recorded in a report. One of Critical, High, Medium, Low.")
+	flag.StringVar(&excludedNamespaces, "excluded-namespaces", "kube-system,kube-public,kube-node-lease",
+		"Comma separated namespaces that are never scanned.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -162,9 +175,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	severity, ok := securityv1alpha1.ParseSeverity(minSeverity)
+	if !ok {
+		setupLog.Error(nil, "Invalid min-severity", "value", minSeverity)
+		os.Exit(1)
+	}
+
 	if err := (&controller.NamespaceSecurityReportReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		Sources:            []sources.Source{builtin.NewEngine()},
+		RescanInterval:     rescanInterval,
+		MinSeverity:        severity,
+		ExcludedNamespaces: splitAndTrim(excludedNamespaces),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "namespacesecurityreport")
 		os.Exit(1)
@@ -185,4 +208,14 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func splitAndTrim(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
