@@ -1,0 +1,17 @@
+bin/
+dist/
+testbin/
+cover.out
+*.test
+
+*.kubeconfig
+kubeconfig
+kubeconfig.*
+.kube/
+*.token
+.env
+.env.*
+
+.DS_Store
+.idea/
+.vscode/
