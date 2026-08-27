@@ -9,7 +9,8 @@ fix it. Reports are refreshed automatically whenever a workload in the namespace
 created or changed, so the report tracks the cluster rather than a point in time.
 
 The reasoning behind the design, and what was deliberately left out, is in
-[DESIGN.md](DESIGN.md).
+[DESIGN.md](DESIGN.md). Every test scenario and its observed result is in
+[TESTING.md](TESTING.md).
 
 ## What a report looks like
 
@@ -17,7 +18,7 @@ The reasoning behind the design, and what was deliberately left out, is in
 $ kubectl get namespacesecurityreports
 NAME                SCORE   CRITICAL   HIGH   MEDIUM   LOW   LAST-SCAN   AGE
 default             90      0          1      0        0     31s         2m
-kubeguardian-demo   0       3          6      5        0     12s         2m
+kubeguardian-demo   0       3          6      6        0     12s         2m
 ```
 
 ```console
@@ -27,9 +28,9 @@ status:
   summary:
     critical: 3
     high: 6
-    medium: 5
+    medium: 6
     low: 0
-    total: 14
+    total: 15
   findings:
     - id: KG-001
       severity: Critical
@@ -50,7 +51,7 @@ status:
     - type: ScanSucceeded
       status: "True"
       reason: ScanCompleted
-      message: 14 finding(s) across 3 severity level(s)
+      message: 15 finding(s) across 3 severity level(s)
   lastScanTime: "2026-08-27T17:50:54Z"
 ```
 
@@ -79,7 +80,7 @@ make demo
 ```
 
 That applies `test/demo/01-insecure-namespace.yaml`, waits a moment, and prints the
-report. It scores 0, with fourteen findings.
+report. It scores 0, with fifteen findings.
 
 An untouched `default` namespace usually scores 90: it has no workloads, so most checks
 do not apply, but it does not enforce a Pod Security Standard. To watch the score recover, apply the hardened version of the same namespace:
@@ -89,7 +90,9 @@ make demo-harden
 ```
 
 The hardened manifest fixes every finding, so the score returns to 100 and the findings
-list empties. `make demo-clean` removes the namespace afterwards.
+list empties. Both manifests describe the same workload and differ only in security
+configuration, and both actually run: the hardened pod is admitted under `restricted`
+Pod Security Admission. `make demo-clean` removes the namespace afterwards.
 
 To prove that reports track changes rather than creation events, edit a workload
 directly and watch the score move:
@@ -107,6 +110,15 @@ kubectl get nsr kubeguardian-demo -w
 make docker-build docker-push IMG=<your-registry>/kubeguardian:v0.1.0
 make deploy IMG=<your-registry>/kubeguardian:v0.1.0
 ```
+
+The runtime base image defaults to `gcr.io/distroless/static:nonroot`. On networks where
+Google-hosted registries are unreachable, override it:
+
+```bash
+make docker-build IMG=kubeguardian:test BASE_IMAGE=alpine:3.22
+```
+
+Prefer a distroless or otherwise minimal base in production; `alpine` ships a shell.
 
 `make undeploy` removes the controller and `make uninstall` removes the CRD. Removing
 the CRD deletes every report; it does not touch the namespaces themselves.
@@ -135,6 +147,7 @@ Every finding carries an identifier from this table. Severities are fixed per ch
 | KG-005 | Pod mounts a `hostPath` volume | High | PodSecurity |
 | KG-006 | Container does not drop all Linux capabilities | Medium | PodSecurity |
 | KG-007 | Container has a writable root filesystem | Medium | PodSecurity |
+| KG-008 | Container sets no seccomp profile, or sets it to `Unconfined` | Medium | PodSecurity |
 | KG-010 | Namespace has no default-deny ingress NetworkPolicy | High | Network |
 | KG-011 | Namespace does not enforce a Pod Security Standard | High | Governance |
 | KG-012 | Default ServiceAccount automounts an API token | Medium | RBAC |
@@ -169,6 +182,11 @@ if needed, and runs everything:
 ```bash
 make lint
 ```
+
+Beyond these, the operator was deployed into a kind cluster and put through 26 acceptance
+scenarios covering the report lifecycle, garbage collection, RBAC sufficiency, loop
+stability, schema validation, flag handling and workload coverage. Results are recorded in
+[TESTING.md](TESTING.md).
 
 ## Repository layout
 

@@ -1,5 +1,8 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+# Runtime base image. Override when gcr.io is unreachable, e.g.
+# make docker-build BASE_IMAGE=alpine:3.22
+BASE_IMAGE ?= gcr.io/distroless/static:nonroot
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -90,7 +93,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_IMAGE) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -109,7 +112,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name kubeguardian-builder
 	$(CONTAINER_TOOL) buildx use kubeguardian-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --build-arg BASE_IMAGE=$(BASE_IMAGE) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm kubeguardian-builder
 	rm Dockerfile.cross
 

@@ -39,7 +39,8 @@ spec:
     spec:
       containers:
         - name: api
-          image: nginx:1.29.1
+          image: busybox:1.37.0
+          command: ["sh", "-c", "while true; do sleep 3600; done"]
           securityContext:
             privileged: false
             runAsNonRoot: true
@@ -48,12 +49,14 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 32Mi
             limits:
-              memory: 512Mi
+              memory: 128Mi
           volumeMounts:
             - name: cache
               mountPath: /tmp

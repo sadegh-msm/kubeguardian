@@ -201,6 +201,7 @@ func (r *NamespaceSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) e
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Namespace{}).
 		Owns(&securityv1alpha1.NamespaceSecurityReport{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc: func(event.CreateEvent) bool { return false },
 			UpdateFunc: func(event.UpdateEvent) bool { return false },
 		})).
 		Watches(&appsv1.Deployment{}, toNamespace, workloadPredicate).

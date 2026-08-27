@@ -112,3 +112,13 @@ func joinFields(items []string) string {
 	}
 	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
+
+func effectiveSeccompProfile(pod corev1.PodSpec, container corev1.Container) *corev1.SeccompProfile {
+	if container.SecurityContext != nil && container.SecurityContext.SeccompProfile != nil {
+		return container.SecurityContext.SeccompProfile
+	}
+	if pod.SecurityContext != nil {
+		return pod.SecurityContext.SeccompProfile
+	}
+	return nil
+}

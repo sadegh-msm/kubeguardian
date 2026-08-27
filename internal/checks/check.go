@@ -58,6 +58,7 @@ func All() []Check {
 		newHostPathVolume(),
 		newCapabilitiesNotDropped(),
 		newWritableRootFilesystem(),
+		newSeccompProfile(),
 		newDefaultDenyNetworkPolicy(),
 		newPodSecurityAdmissionLabels(),
 		newDefaultServiceAccountToken(),

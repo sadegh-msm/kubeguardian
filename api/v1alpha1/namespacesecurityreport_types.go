@@ -25,7 +25,7 @@ type NamespaceSecurityReportStatus struct {
 	Score int `json:"score"`
 
 	// +optional
-	Summary SeveritySummary `json:"summary,omitzero"`
+	Summary SeveritySummary `json:"summary"`
 
 	// +optional
 	Findings []Finding `json:"findings,omitempty"`

@@ -64,6 +64,7 @@ var _ = Describe("Demo manifests", Ordered, func() {
 			ContainElement("KG-010"),
 			ContainElement("KG-011"),
 			ContainElement("KG-013"),
+			ContainElement("KG-008"),
 			ContainElement("KG-020"),
 			ContainElement("KG-021"),
 		))
@@ -100,5 +101,8 @@ var _ = Describe("Demo manifests", Ordered, func() {
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-010"))
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-011"))
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-013"))
+		Expect(findingIDs(report)).NotTo(ContainElement("KG-008"))
+		Expect(report.Status.Score).To(Equal(100))
+		Expect(report.Status.Summary.Total).To(Equal(0))
 	})
 })

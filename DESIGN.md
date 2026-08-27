@@ -1,5 +1,7 @@
 # Design
 
+Test scenarios and their observed results are in [TESTING.md](TESTING.md).
+
 This document carries the explanatory load that comments normally would. The code has
 none by choice, so the reasoning lives in one place a reviewer reads deliberately,
 instead of scattered through files where it drifts out of date.
@@ -15,7 +17,7 @@ What is built:
 
 - A cluster-scoped `NamespaceSecurityReport` CRD, one per namespace
 - A controller that watches namespaces and the workloads inside them
-- Thirteen checks across pod security, network, RBAC, supply chain and governance
+- Fourteen checks across pod security, network, RBAC, supply chain and governance
 - A `Source` seam so findings can come from somewhere other than the built-in engine
 - Unit tests per check, and integration tests against a real API server via envtest
 
@@ -129,7 +131,7 @@ type Check interface {
 
 Purity is the point. Checks touch no client and no context, so their tests need no
 cluster, run in milliseconds, and cover edge cases that would be tedious to stage against
-a real API server. Check coverage is 98.5% as a result.
+a real API server. Check coverage is 98.6% as a result.
 
 Shared metadata lives in an embedded `meta` struct, so each rule file contains only its
 logic and its remediation text, and no rule can accidentally emit a finding with a
