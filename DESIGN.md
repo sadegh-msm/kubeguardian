@@ -42,57 +42,74 @@ Events were considered as an addition. They were dropped because a namespace wit
 fourteen findings would emit fourteen events on every rescan, and suppressing that noise
 is real work for little gain when the report already holds the same information.
 
-## Report shape
+## Report shape and who creates it
 
-The report is **cluster-scoped**, named after the namespace it describes, with
-`spec.namespaceRef` naming it explicitly.
+The report is **cluster-scoped** and names its target through `spec.namespaceRef`.
 
-This buys a specific thing. `Namespace` is cluster-scoped, and Kubernetes garbage
-collection only accepts an owner reference when the owner is cluster-scoped or in the
-same namespace as the dependent. Making the report cluster-scoped lets the namespace own
-it, so deleting a namespace deletes its report automatically. No finalizer, no cleanup
-path, no risk of leaking reports for namespaces that no longer exist.
+**The user creates it; the operator never does.** An earlier version reconciled namespaces
+and created a report for each one, which meant every new namespace silently acquired a
+cluster-scoped object nobody asked for. Scanning is now opt-in: the report *is* the
+request, and its status is the answer. That is the more honest reading of a custom
+resource, and it means the set of things being audited is something you declare rather than
+something that accumulates.
 
-The alternative, a namespaced report living inside the namespace it describes, cannot
-have the namespace as its owner in a useful way and would need explicit cleanup.
+The practical consequences:
+
+- The controller reconciles `NamespaceSecurityReport`, not `Namespace`. Workload events
+  reach it through a field index on `spec.namespaceRef`, so a Deployment change enqueues
+  exactly the reports that name its namespace.
+- No owner reference is set. The object is the user's, and mutating its ownership to make
+  it disappear with the namespace would be a surprise. A report whose namespace is gone
+  instead reports `ScanSucceeded=False` with reason `NamespaceNotFound`, which is visible
+  rather than silent.
+- `--excluded-namespaces` was removed. It existed to stop auto-creation flooding
+  control-plane namespaces; with explicit opt-in it configured nothing, and a flag that
+  does nothing is worse than no flag.
+
+Cluster scope is still right: the report describes a namespace rather than living inside
+it, and several reports against one namespace remain possible.
 
 ## Reconcile flow
 
 ```
-Namespace event ─┐
-Deployment       │
-StatefulSet      │
-DaemonSet        ├─► mapToNamespace ─► workqueue ─► Reconcile(namespace)
-CronJob          │                                        │
-NetworkPolicy    │                              snapshot.Collect
-Role             │                                        │
-ServiceAccount   │                              Source.Collect for each source
-ScanException   ─┘                               ├─ builtin.Engine
-                                                 └─ trivy.Adapter   (when installed)
-                                                          │
-                                                   sources.Normalize
-                                                          │
-                                              exceptions.Apply, mark suppressed
-                                                          │
-                                          sources.Truncate, sources.Summarize
-                                                          │
-                                           CreateOrUpdate report, update .status
+NamespaceSecurityReport ─┐   created by the user, never by the operator
+Namespace                │
+Deployment               │
+StatefulSet              │
+DaemonSet                ├─► index on spec.namespaceRef ─► Reconcile(report)
+CronJob                  │                                       │
+NetworkPolicy            │                             snapshot.Collect
+Role                     │                                       │
+ServiceAccount           │                        Source.Collect for each source
+ScanException           ─┘                         ├─ builtin.Engine
+                                                   └─ trivy.Adapter (when installed)
+                                                                 │
+                                                         sources.Normalize
+                                                                 │
+                                                exceptions.Apply, mark suppressed
+                                                                 │
+                                            sources.Truncate, sources.Summarize
+                                                                 │
+                                                     update report .status
 ```
 
-Reconcile is keyed on the namespace, never on an individual workload. Any event in the
+Reconcile is keyed on the report, never on an individual workload. Any event in the target
 namespace collapses to the same work item, so a rollout touching twenty objects produces
 one scan rather than twenty.
+
+The `For` watch carries `GenerationChangedPredicate`, which is what stops the controller
+spinning on its own status writes: a status update does not change generation.
 
 ## Reacting to workload changes
 
 This is the requirement most likely to be implemented badly, so it is worth being
 explicit about the mechanism.
 
-`For(&corev1.Namespace{})` alone would only reconcile on namespace events. Workload
-events reach the same reconcile key through
-`handler.EnqueueRequestsFromMapFunc(mapToNamespace)`, which maps any namespaced object to
-a request for its namespace. `mapToNamespace` returns no request for cluster-scoped
-objects, so a stray watch cannot enqueue an empty key.
+`For(&NamespaceSecurityReport{})` alone would only reconcile when a report changed. Workload
+events reach the right reports through a field index on `spec.namespaceRef`: given a
+Deployment in `payments`, the map function lists the reports that name `payments` and
+enqueues those. An object in a namespace nobody asked to audit maps to zero requests and
+costs nothing.
 
 Workload watches carry `predicate.GenerationChangedPredicate`. Without it, every replica
 count update written by the deployment controller would trigger a full namespace rescan.

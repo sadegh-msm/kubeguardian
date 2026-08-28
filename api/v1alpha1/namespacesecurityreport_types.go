@@ -24,8 +24,9 @@ import (
 const (
 	ConditionScanSucceeded = "ScanSucceeded"
 
-	ReasonScanCompleted = "ScanCompleted"
-	ReasonScanFailed    = "ScanFailed"
+	ReasonScanCompleted     = "ScanCompleted"
+	ReasonScanFailed        = "ScanFailed"
+	ReasonNamespaceNotFound = "NamespaceNotFound"
 )
 
 // NamespaceSecurityReportSpec defines the desired state of NamespaceSecurityReport

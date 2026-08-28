@@ -88,20 +88,60 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 		})).To(Succeed())
 	})
 
-	It("creates a report for a new namespace", func() {
-		Eventually(func() error {
+	requestReport := func() {
+		Expect(k8sClient.Create(ctx, &securityv1alpha1.NamespaceSecurityReport{
+			ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
+			Spec:       securityv1alpha1.NamespaceSecurityReportSpec{NamespaceRef: namespaceName},
+		})).To(Succeed())
+	}
+
+	It("does not create a report on its own", func() {
+		Consistently(func() error {
 			_, err := reportFor(namespaceName)()
 			return err
-		}, timeout, interval).Should(Succeed())
+		}, 3*time.Second, 500*time.Millisecond).ShouldNot(Succeed())
+	})
+
+	It("populates a report that the user creates", func() {
+		requestReport()
+
+		Eventually(func() []metav1.Condition {
+			report, err := reportFor(namespaceName)()
+			if err != nil {
+				return nil
+			}
+			return report.Status.Conditions
+		}, timeout, interval).Should(ContainElement(And(
+			HaveField("Type", securityv1alpha1.ConditionScanSucceeded),
+			HaveField("Status", metav1.ConditionTrue),
+		)))
 
 		report, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(report.Spec.NamespaceRef).To(Equal(namespaceName))
-		Expect(report.OwnerReferences).To(HaveLen(1))
-		Expect(report.OwnerReferences[0].Kind).To(Equal("Namespace"))
+	})
+
+	It("reports a missing namespace instead of scanning", func() {
+		Expect(k8sClient.Create(ctx, &securityv1alpha1.NamespaceSecurityReport{
+			ObjectMeta: metav1.ObjectMeta{Name: "dangling-" + namespaceName},
+			Spec:       securityv1alpha1.NamespaceSecurityReportSpec{NamespaceRef: "does-not-exist"},
+		})).To(Succeed())
+
+		Eventually(func() []metav1.Condition {
+			report := &securityv1alpha1.NamespaceSecurityReport{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "dangling-" + namespaceName}, report); err != nil {
+				return nil
+			}
+			return report.Status.Conditions
+		}, timeout, interval).Should(ContainElement(And(
+			HaveField("Type", securityv1alpha1.ConditionScanSucceeded),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", securityv1alpha1.ReasonNamespaceNotFound),
+		)))
 	})
 
 	It("reports findings when an insecure workload is created", func() {
+		requestReport()
 		Expect(k8sClient.Create(ctx, insecureDeployment(namespaceName))).To(Succeed())
 
 		Eventually(func() []string {
@@ -128,6 +168,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 	})
 
 	It("rescans when an existing workload changes", func() {
+		requestReport()
 		deployment := insecureDeployment(namespaceName)
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
@@ -161,6 +202,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 	})
 
 	It("records the scan time even when the findings do not change", func() {
+		requestReport()
 		deployment := insecureDeployment(namespaceName)
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
@@ -197,6 +239,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 	})
 
 	It("marks the scan as succeeded", func() {
+		requestReport()
 		Eventually(func() []metav1.Condition {
 			report, err := reportFor(namespaceName)()
 			if err != nil {

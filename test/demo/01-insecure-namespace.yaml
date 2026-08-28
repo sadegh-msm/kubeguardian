@@ -3,6 +3,13 @@ kind: Namespace
 metadata:
   name: kubeguardian-demo
 ---
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: NamespaceSecurityReport
+metadata:
+  name: kubeguardian-demo
+spec:
+  namespaceRef: kubeguardian-demo
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -3,14 +3,38 @@
 KubeGuardian is a Kubernetes operator that continuously audits the security posture of
 every namespace in a cluster and publishes what it finds as a Kubernetes resource.
 
-For each namespace it produces a `NamespaceSecurityReport` containing the problems it
-detected, a concrete suggestion for each one, and a command or manifest you can apply to
-fix it. Reports are refreshed automatically whenever a workload in the namespace is
-created or changed, so the report tracks the cluster rather than a point in time.
+You ask for a namespace to be audited by creating a `NamespaceSecurityReport` naming it.
+KubeGuardian fills in the status: the problems it detected, a concrete suggestion for each
+one, and a command or manifest you can apply to fix it. The report is refreshed
+automatically whenever a workload in that namespace is created or changed, so it tracks the
+cluster rather than a point in time.
+
+Nothing is scanned unless you ask for it. Creating a namespace does not create a report.
 
 The reasoning behind the design, and what was deliberately left out, is in
 [DESIGN.md](DESIGN.md). Every test scenario and its observed result is in
 [TESTING.md](TESTING.md).
+
+## Asking for a scan
+
+```yaml
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: NamespaceSecurityReport
+metadata:
+  name: payments
+spec:
+  namespaceRef: payments
+```
+
+`spec.namespaceRef` names the namespace to audit. The report is cluster-scoped, so its own
+name is free; naming it after the namespace is the obvious convention but nothing depends
+on it, and you can keep several reports against one namespace if that suits your workflow.
+
+If the referenced namespace does not exist, the report says so through its
+`ScanSucceeded` condition with reason `NamespaceNotFound`, rather than silently doing
+nothing or deleting itself.
+
+Deleting the report stops the scanning. Nothing else is affected.
 
 ## What a report looks like
 
@@ -73,7 +97,8 @@ make install
 make run
 ```
 
-In a second terminal, create a deliberately insecure namespace and read the report:
+In a second terminal, create a deliberately insecure namespace, ask for it to be audited,
+and read the result:
 
 ```bash
 make demo
@@ -132,7 +157,6 @@ The controller is configured with flags on the manager binary.
 | `--rescan-interval` | `10m` | How often each namespace is rescanned even when no workload event arrives, so drift and clock-dependent findings are still caught. |
 | `--min-severity` | `Low` | Lowest severity recorded in a report. Set to `High` to keep reports focused on what matters most. |
 | `--max-findings` | `200` | Upper bound on findings per report. The least severe are dropped first, so a pathological namespace cannot produce an object the API server refuses. |
-| `--excluded-namespaces` | `kube-system,kube-public,kube-node-lease` | Namespaces that are never scanned. Control-plane namespaces legitimately run privileged workloads and would otherwise dominate every report. |
 | `--leader-elect` | `false` | Enable when running more than one replica. |
 
 ## The check catalog

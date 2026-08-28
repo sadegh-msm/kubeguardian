@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
-	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -69,14 +68,11 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	var rescanInterval time.Duration
 	var minSeverity string
-	var excludedNamespaces string
 	var maxFindings int
 	flag.DurationVar(&rescanInterval, "rescan-interval", 10*time.Minute,
 		"How often every namespace is rescanned even when no workload event arrives.")
 	flag.StringVar(&minSeverity, "min-severity", string(securityv1alpha1.SeverityLow),
 		"Lowest severity recorded in a report. One of Critical, High, Medium, Low.")
-	flag.StringVar(&excludedNamespaces, "excluded-namespaces", "kube-system,kube-public,kube-node-lease",
-		"Comma separated namespaces that are never scanned.")
 	flag.IntVar(&maxFindings, "max-findings", 200,
 		"Maximum findings recorded per report. Lowest severities are dropped first so the "+
 			"object stays within API server limits.")
@@ -172,6 +168,7 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	signalCtx := ctrl.SetupSignalHandler()
 	restConfig := ctrl.GetConfigOrDie()
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
@@ -219,14 +216,13 @@ func main() {
 	}
 
 	if err := (&controller.NamespaceSecurityReportReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		Sources:            scanSources,
-		RescanInterval:     rescanInterval,
-		MinSeverity:        severity,
-		ExcludedNamespaces: splitAndTrim(excludedNamespaces),
-		MaxFindings:        maxFindings,
-	}).SetupWithManager(mgr); err != nil {
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Sources:        scanSources,
+		RescanInterval: rescanInterval,
+		MinSeverity:    severity,
+		MaxFindings:    maxFindings,
+	}).SetupWithManager(signalCtx, mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "namespacesecurityreport")
 		os.Exit(1)
 	}
@@ -242,18 +238,8 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(signalCtx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
-}
-
-func splitAndTrim(value string) []string {
-	var out []string
-	for item := range strings.SplitSeq(value, ",") {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }

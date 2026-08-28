@@ -95,13 +95,13 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&NamespaceSecurityReportReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		Sources:            []sources.Source{builtin.NewEngine()},
-		RescanInterval:     time.Hour,
-		MinSeverity:        securityv1alpha1.SeverityLow,
-		ExcludedNamespaces: []string{"kube-system", "kube-public", "kube-node-lease"},
-	}).SetupWithManager(mgr)
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Sources:        []sources.Source{builtin.NewEngine()},
+		RescanInterval: time.Hour,
+		MinSeverity:    securityv1alpha1.SeverityLow,
+		MaxFindings:    200,
+	}).SetupWithManager(ctx, mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	go func() {

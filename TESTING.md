@@ -416,3 +416,60 @@ repointing `image.registry`, `trivy.image.registry`, `trivy.dbRegistry` and
 `trivy.javaDbRegistry` at Docker Hub, which those nodes can reach. Each image was verified
 to exist on Docker Hub before applying the change, rather than risking a second failed
 rollout on their cluster.
+
+---
+
+# Third round: opt-in reports
+
+Reports are no longer created automatically. The user creates a `NamespaceSecurityReport`
+naming the namespace to audit, and the operator fills in its status.
+
+## O1 — envtest coverage of the new model
+
+| Spec | Asserts |
+|---|---|
+| does not create a report on its own | A new namespace is created and, over a three-second `Consistently` window, no report appears |
+| populates a report that the user creates | Creating the report drives it to `ScanSucceeded=True` |
+| reports a missing namespace instead of scanning | A report naming a non-existent namespace reaches `ScanSucceeded=False` with reason `NamespaceNotFound` rather than being silently ignored or deleted |
+
+The existing specs for findings, rescan-on-change and scan-time recording were kept and now
+create their report explicitly first.
+
+`Consistently` rather than `Eventually` is the point of the first spec: proving something
+*does not* happen needs a window, not a retry loop.
+
+## O2 — the scheduling failure behind the stuck Trivy job
+
+A `scan-vulnerabilityreport` pod sat `Pending` with `FailedScheduling: No nodes available`.
+
+The cluster has six Ready nodes, but four carry taints:
+
+```
+c243-gw1       nodepool=gw:NoSchedule
+c243-m1        node-role.kubernetes.io/control-plane:NoSchedule
+c243-p1        nodepool=p:NoSchedule
+c243-p2        nodepool=p:NoSchedule
+c243-worker1   (none)
+c243-worker2   (none)
+```
+
+Scan pods carry only the default not-ready and unreachable tolerations, so they can land on
+`worker1` and `worker2` alone. Those two were already at 82% and 88% of allocatable CPU
+requested, leaving roughly 250m and 160m free.
+
+The stuck pod was scanning a four-container CSI driver workload. trivy-operator requests
+100m of CPU per scanned container, so the pod asked for 400m and fitted on neither worker.
+Single-container scans, which is most of them, fitted fine — which is why exactly one job
+was stuck rather than all of them.
+
+Fixed by lowering the per-container scan request rather than by granting tolerations for
+the `nodepool` taints. Those pools are dedicated for a reason, and pushing scan load onto
+them is a decision for whoever owns the cluster, not a side effect of installing a scanner:
+
+```bash
+--set trivy.resources.requests.cpu=25m
+--set trivy.resources.requests.memory=64M
+```
+
+The CPU *limit* stays at 500m, so scans still burst; only the scheduling reservation
+shrank. A four-container scan now reserves 100m instead of 400m.
