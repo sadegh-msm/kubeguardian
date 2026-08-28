@@ -41,6 +41,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
+        description: NamespaceSecurityReport is the Schema for the namespacesecurityreports
+          API
         properties:
           apiVersion:
             description: |-
@@ -60,6 +62,8 @@ spec:
           metadata:
             type: object
           spec:
+            description: NamespaceSecurityReportSpec defines the desired state of
+              NamespaceSecurityReport
             properties:
               namespaceRef:
                 minLength: 1
@@ -68,8 +72,15 @@ spec:
             - namespaceRef
             type: object
           status:
+            description: NamespaceSecurityReportStatus defines the observed state
+              of NamespaceSecurityReport.
             properties:
               conditions:
+                description: |-
+                  conditions represent the current state of the NamespaceSecurityReport resource.
+                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
+
+                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
