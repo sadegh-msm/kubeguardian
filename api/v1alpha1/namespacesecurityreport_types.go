@@ -38,11 +38,6 @@ type NamespaceSecurityReportSpec struct {
 // NamespaceSecurityReportStatus defines the observed state of NamespaceSecurityReport.
 type NamespaceSecurityReportStatus struct {
 	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=100
-	Score int `json:"score"`
-
-	// +optional
 	Summary SeveritySummary `json:"summary"`
 
 	// +optional
@@ -67,11 +62,11 @@ type NamespaceSecurityReportStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=nsr
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Score",type=integer,JSONPath=`.status.score`
 // +kubebuilder:printcolumn:name="Critical",type=integer,JSONPath=`.status.summary.critical`
 // +kubebuilder:printcolumn:name="High",type=integer,JSONPath=`.status.summary.high`
 // +kubebuilder:printcolumn:name="Medium",type=integer,JSONPath=`.status.summary.medium`
 // +kubebuilder:printcolumn:name="Low",type=integer,JSONPath=`.status.summary.low`
+// +kubebuilder:printcolumn:name="Suppressed",type=integer,JSONPath=`.status.summary.suppressed`
 // +kubebuilder:printcolumn:name="Last-Scan",type=date,JSONPath=`.status.lastScanTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // NamespaceSecurityReport is the Schema for the namespacesecurityreports API

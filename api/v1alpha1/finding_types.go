@@ -107,6 +107,15 @@ type Finding struct {
 
 	// +required
 	Source string `json:"source"`
+
+	// +optional
+	Suppressed bool `json:"suppressed,omitempty"`
+
+	// +optional
+	SuppressedBy string `json:"suppressedBy,omitempty"`
+
+	// +optional
+	SuppressedReason string `json:"suppressedReason,omitempty"`
 }
 
 type SeveritySummary struct {
@@ -124,4 +133,7 @@ type SeveritySummary struct {
 
 	// +optional
 	Total int `json:"total"`
+
+	// +optional
+	Suppressed int `json:"suppressed"`
 }

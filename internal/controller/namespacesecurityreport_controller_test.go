@@ -119,7 +119,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 		report, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(report.Status.Summary.Critical).To(BeNumerically(">=", 2))
-		Expect(report.Status.Score).To(BeNumerically("<", 100))
+		Expect(report.Status.Summary.Total).To(BeNumerically(">", 0))
 
 		for _, finding := range report.Status.Findings {
 			Expect(finding.Suggestion).NotTo(BeEmpty())
@@ -157,7 +157,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 
 		after, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(after.Status.Score).To(BeNumerically(">", before.Status.Score))
+		Expect(after.Status.Summary.Critical).To(BeNumerically("<", before.Status.Summary.Critical))
 	})
 
 	It("records the scan time even when the findings do not change", func() {

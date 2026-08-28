@@ -31,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,9 +42,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
-	"github.com/sadegh-msm/kubeguardian/internal/scoring"
+	"github.com/sadegh-msm/kubeguardian/internal/exceptions"
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 )
@@ -55,11 +58,14 @@ type NamespaceSecurityReportReconciler struct {
 	RescanInterval     time.Duration
 	MinSeverity        securityv1alpha1.Severity
 	ExcludedNamespaces []string
+	MaxFindings        int
 }
 
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=namespacesecurityreports,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=namespacesecurityreports/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=namespacesecurityreports/finalizers,verbs=update
+// +kubebuilder:rbac:groups=security.kubeguardian.io,resources=scanexceptions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=aquasecurity.github.io,resources=vulnerabilityreports;exposedsecretreports,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;resourcequotas;limitranges,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list;watch
@@ -98,18 +104,27 @@ func (r *NamespaceSecurityReportReconciler) Reconcile(ctx context.Context, req c
 	}
 
 	findings = sources.Normalize(findings, r.minSeverity())
-	score, summary := scoring.Compute(findings)
+
+	accepted, err := exceptions.Load(ctx, r.Client, time.Now())
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	findings = accepted.Apply(namespace, findings)
+
+	findings, omitted := sources.Truncate(findings, r.MaxFindings)
+	summary := sources.Summarize(findings)
 
 	report, err := r.ensureReport(ctx, namespace)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.writeStatus(ctx, report, findings, score, summary); err != nil {
+	if err := r.writeStatus(ctx, report, findings, summary, omitted); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.V(1).Info("namespace scanned", "namespace", namespace.Name, "score", score, "findings", len(findings))
+	log.V(1).Info("namespace scanned", "namespace", namespace.Name,
+		"findings", summary.Total, "suppressed", summary.Suppressed)
 	return ctrl.Result{RequeueAfter: r.requeueAfter()}, nil
 }
 
@@ -142,24 +157,32 @@ func (r *NamespaceSecurityReportReconciler) writeStatus(
 	ctx context.Context,
 	report *securityv1alpha1.NamespaceSecurityReport,
 	findings []securityv1alpha1.Finding,
-	score int,
 	summary securityv1alpha1.SeveritySummary,
+	omitted int,
 ) error {
-	patch := client.MergeFrom(report.DeepCopy())
-	report.Status.Score = score
-	report.Status.Summary = summary
-	report.Status.Findings = findings
-	report.Status.LastScanTime = metav1.Now()
-	report.Status.ObservedGeneration = report.Generation
-	meta.SetStatusCondition(&report.Status.Conditions, metav1.Condition{
-		Type:    securityv1alpha1.ConditionScanSucceeded,
-		Status:  metav1.ConditionTrue,
-		Reason:  securityv1alpha1.ReasonScanCompleted,
-		Message: fmt.Sprintf("%d finding(s) across %d severity level(s)", summary.Total, distinctSeverities(summary)),
-	})
+	key := client.ObjectKeyFromObject(report)
 
-	if err := r.Status().Patch(ctx, report, patch); err != nil {
-		return fmt.Errorf("patch status of report %s: %w", report.Name, err)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &securityv1alpha1.NamespaceSecurityReport{}
+		if err := r.Get(ctx, key, current); err != nil {
+			return err
+		}
+
+		current.Status.Summary = summary
+		current.Status.Findings = findings
+		current.Status.LastScanTime = metav1.Now()
+		current.Status.ObservedGeneration = current.Generation
+		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+			Type:    securityv1alpha1.ConditionScanSucceeded,
+			Status:  metav1.ConditionTrue,
+			Reason:  securityv1alpha1.ReasonScanCompleted,
+			Message: scanMessage(summary, omitted),
+		})
+
+		return r.Status().Update(ctx, current)
+	})
+	if err != nil {
+		return fmt.Errorf("update status of report %s: %w", report.Name, err)
 	}
 	return nil
 }
@@ -207,6 +230,17 @@ func (r *NamespaceSecurityReportReconciler) minSeverity() securityv1alpha1.Sever
 	return r.MinSeverity
 }
 
+func scanMessage(summary securityv1alpha1.SeveritySummary, omitted int) string {
+	message := fmt.Sprintf("%d finding(s) across %d severity level(s)", summary.Total, distinctSeverities(summary))
+	if summary.Suppressed > 0 {
+		message += fmt.Sprintf(", %d suppressed by exception", summary.Suppressed)
+	}
+	if omitted > 0 {
+		message += fmt.Sprintf(", %d omitted by --max-findings", omitted)
+	}
+	return message
+}
+
 func distinctSeverities(summary securityv1alpha1.SeveritySummary) int {
 	count := 0
 	for _, value := range []int{summary.Critical, summary.High, summary.Medium, summary.Low} {
@@ -215,6 +249,23 @@ func distinctSeverities(summary securityv1alpha1.SeveritySummary) int {
 		}
 	}
 	return count
+}
+
+func (r *NamespaceSecurityReportReconciler) allNamespaces(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list corev1.NamespaceList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).Error(err, "listing namespaces for exception fan-out")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for _, namespace := range list.Items {
+		if r.isExcluded(namespace.Name) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: namespace.Name}})
+	}
+	return requests
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -235,6 +286,7 @@ func (r *NamespaceSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) e
 		Watches(&networkingv1.NetworkPolicy{}, toNamespace).
 		Watches(&rbacv1.Role{}, toNamespace).
 		Watches(&corev1.ServiceAccount{}, toNamespace).
+		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.allNamespaces)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Named("namespacesecurityreport").
 		Complete(r)

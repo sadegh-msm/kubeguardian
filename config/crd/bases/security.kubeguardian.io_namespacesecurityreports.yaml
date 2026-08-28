@@ -17,9 +17,6 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.score
-      name: Score
-      type: integer
     - jsonPath: .status.summary.critical
       name: Critical
       type: integer
@@ -31,6 +28,9 @@ spec:
       type: integer
     - jsonPath: .status.summary.low
       name: Low
+      type: integer
+    - jsonPath: .status.summary.suppressed
+      name: Suppressed
       type: integer
     - jsonPath: .status.lastScanTime
       name: Last-Scan
@@ -181,6 +181,12 @@ spec:
                       type: string
                     suggestion:
                       type: string
+                    suppressed:
+                      type: boolean
+                    suppressedBy:
+                      type: string
+                    suppressedReason:
+                      type: string
                   required:
                   - category
                   - id
@@ -197,10 +203,6 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
-              score:
-                maximum: 100
-                minimum: 0
-                type: integer
               summary:
                 properties:
                   critical:
@@ -210,6 +212,8 @@ spec:
                   low:
                     type: integer
                   medium:
+                    type: integer
+                  suppressed:
                     type: integer
                   total:
                     type: integer

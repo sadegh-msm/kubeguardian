@@ -26,6 +26,15 @@ rules:
   - list
   - watch
 - apiGroups:
+  - aquasecurity.github.io
+  resources:
+  - exposedsecretreports
+  - vulnerabilityreports
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - batch
   resources:
   - cronjobs
@@ -76,3 +85,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - security.kubeguardian.io
+  resources:
+  - scanexceptions
+  verbs:
+  - get
+  - list
+  - watch

@@ -41,6 +41,7 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/controller"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
+	"github.com/sadegh-msm/kubeguardian/internal/sources/trivy"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -69,12 +70,16 @@ func main() {
 	var rescanInterval time.Duration
 	var minSeverity string
 	var excludedNamespaces string
+	var maxFindings int
 	flag.DurationVar(&rescanInterval, "rescan-interval", 10*time.Minute,
 		"How often every namespace is rescanned even when no workload event arrives.")
 	flag.StringVar(&minSeverity, "min-severity", string(securityv1alpha1.SeverityLow),
 		"Lowest severity recorded in a report. One of Critical, High, Medium, Low.")
 	flag.StringVar(&excludedNamespaces, "excluded-namespaces", "kube-system,kube-public,kube-node-lease",
 		"Comma separated namespaces that are never scanned.")
+	flag.IntVar(&maxFindings, "max-findings", 200,
+		"Maximum findings recorded per report. Lowest severities are dropped first so the "+
+			"object stays within API server limits.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -167,7 +172,9 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -197,13 +204,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	scanSources := []sources.Source{builtin.NewEngine()}
+
+	trivyAdapter, err := trivy.NewAdapter(restConfig)
+	if err != nil {
+		setupLog.Error(err, "Unable to initialise the Trivy source")
+		os.Exit(1)
+	}
+	if trivyAdapter.Enabled() {
+		scanSources = append(scanSources, trivyAdapter)
+		setupLog.Info("Trivy integration enabled")
+	} else {
+		setupLog.Info("Trivy integration disabled, aquasecurity.github.io reports not found in this cluster")
+	}
+
 	if err := (&controller.NamespaceSecurityReportReconciler{
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
-		Sources:            []sources.Source{builtin.NewEngine()},
+		Sources:            scanSources,
 		RescanInterval:     rescanInterval,
 		MinSeverity:        severity,
 		ExcludedNamespaces: splitAndTrim(excludedNamespaces),
+		MaxFindings:        maxFindings,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "namespacesecurityreport")
 		os.Exit(1)

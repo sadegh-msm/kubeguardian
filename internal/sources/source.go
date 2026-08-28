@@ -58,3 +58,36 @@ func Normalize(findings []securityv1alpha1.Finding, minSeverity securityv1alpha1
 
 	return filtered
 }
+
+func Summarize(findings []securityv1alpha1.Finding) securityv1alpha1.SeveritySummary {
+	var summary securityv1alpha1.SeveritySummary
+
+	for _, finding := range findings {
+		if finding.Suppressed {
+			summary.Suppressed++
+			continue
+		}
+
+		summary.Total++
+
+		switch finding.Severity {
+		case securityv1alpha1.SeverityCritical:
+			summary.Critical++
+		case securityv1alpha1.SeverityHigh:
+			summary.High++
+		case securityv1alpha1.SeverityMedium:
+			summary.Medium++
+		case securityv1alpha1.SeverityLow:
+			summary.Low++
+		}
+	}
+
+	return summary
+}
+
+func Truncate(findings []securityv1alpha1.Finding, max int) ([]securityv1alpha1.Finding, int) {
+	if max <= 0 || len(findings) <= max {
+		return findings, 0
+	}
+	return findings[:max], len(findings) - max
+}

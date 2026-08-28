@@ -120,3 +120,63 @@ func TestNormalizeAppliesMinimumSeverity(t *testing.T) {
 		t.Fatalf("got %v, want %v", ids(got), want)
 	}
 }
+
+func suppressed(f securityv1alpha1.Finding) securityv1alpha1.Finding {
+	f.Suppressed = true
+	f.SuppressedBy = "accepted-risk"
+	return f
+}
+
+func TestSummarizeCountsBySeverity(t *testing.T) {
+	got := Summarize([]securityv1alpha1.Finding{
+		finding("KG-001", securityv1alpha1.SeverityCritical, "Deployment", "a"),
+		finding("KG-002", securityv1alpha1.SeverityHigh, "Deployment", "b"),
+		finding("KG-003", securityv1alpha1.SeverityHigh, "Deployment", "c"),
+		finding("KG-021", securityv1alpha1.SeverityMedium, "Deployment", "d"),
+	})
+
+	want := securityv1alpha1.SeveritySummary{Critical: 1, High: 2, Medium: 1, Total: 4}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestSummarizeExcludesSuppressedFromCounts(t *testing.T) {
+	got := Summarize([]securityv1alpha1.Finding{
+		suppressed(finding("KG-004", securityv1alpha1.SeverityCritical, "DaemonSet", "agent")),
+		suppressed(finding("KG-004", securityv1alpha1.SeverityCritical, "DaemonSet", "agent2")),
+		finding("KG-002", securityv1alpha1.SeverityHigh, "Deployment", "api"),
+	})
+
+	want := securityv1alpha1.SeveritySummary{High: 1, Total: 1, Suppressed: 2}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestTruncateKeepsHighestSeveritiesFirst(t *testing.T) {
+	input := Normalize([]securityv1alpha1.Finding{
+		finding("KG-021", securityv1alpha1.SeverityMedium, "Deployment", "c"),
+		finding("KG-001", securityv1alpha1.SeverityCritical, "Deployment", "a"),
+		finding("KG-002", securityv1alpha1.SeverityHigh, "Deployment", "b"),
+	}, securityv1alpha1.SeverityLow)
+
+	got, omitted := Truncate(input, 2)
+	if omitted != 1 {
+		t.Fatalf("omitted = %d, want 1", omitted)
+	}
+	if got[0].Severity != securityv1alpha1.SeverityCritical || got[1].Severity != securityv1alpha1.SeverityHigh {
+		t.Fatalf("truncation must keep the most severe findings, got %v", ids(got))
+	}
+}
+
+func TestTruncateIsNoopBelowLimit(t *testing.T) {
+	input := []securityv1alpha1.Finding{finding("KG-001", securityv1alpha1.SeverityCritical, "Deployment", "a")}
+
+	for _, limit := range []int{0, 1, 5} {
+		got, omitted := Truncate(input, limit)
+		if omitted != 0 || len(got) != 1 {
+			t.Fatalf("limit %d: got %d findings and %d omitted, want 1 and 0", limit, len(got), omitted)
+		}
+	}
+}

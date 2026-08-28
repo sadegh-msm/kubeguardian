@@ -62,7 +62,6 @@ func demoReport() (*securityv1alpha1.NamespaceSecurityReport, error) {
 }
 
 var _ = Describe("Demo manifests", Ordered, func() {
-	var insecureScore int
 
 	It("flags the insecure namespace", func() {
 		applyManifest("01-insecure-namespace.yaml")
@@ -87,7 +86,6 @@ var _ = Describe("Demo manifests", Ordered, func() {
 
 		report, err := demoReport()
 		Expect(err).NotTo(HaveOccurred())
-		insecureScore = report.Status.Score
 
 		hostNamespaceFindings := 0
 		for _, finding := range report.Status.Findings {
@@ -96,7 +94,7 @@ var _ = Describe("Demo manifests", Ordered, func() {
 			}
 		}
 		Expect(hostNamespaceFindings).To(Equal(2))
-		Expect(insecureScore).To(Equal(0))
+		Expect(report.Status.Summary.Total).To(BeNumerically(">=", 15))
 	})
 
 	It("clears the findings once the hardened manifest is applied", func() {
@@ -107,8 +105,8 @@ var _ = Describe("Demo manifests", Ordered, func() {
 			if err != nil {
 				return -1
 			}
-			return report.Status.Score
-		}, timeout, interval).Should(BeNumerically(">", insecureScore))
+			return report.Status.Summary.Total
+		}, timeout, interval).Should(Equal(0))
 
 		report, err := demoReport()
 		Expect(err).NotTo(HaveOccurred())
@@ -118,7 +116,6 @@ var _ = Describe("Demo manifests", Ordered, func() {
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-011"))
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-013"))
 		Expect(findingIDs(report)).NotTo(ContainElement("KG-008"))
-		Expect(report.Status.Score).To(Equal(100))
 		Expect(report.Status.Summary.Total).To(Equal(0))
 	})
 })
