@@ -18,7 +18,8 @@ What is built:
 - A cluster-scoped `NamespaceSecurityReport` CRD, one per namespace
 - A controller that watches namespaces and the workloads inside them
 - Fourteen checks across pod security, network, RBAC, supply chain and governance
-- A `Source` seam so findings can come from somewhere other than the built-in engine
+- A `Source` seam with two implementations: the built-in engine and a Trivy adapter
+- A `ScanException` CRD for recording accepted risks without hiding them
 - Unit tests per check, and integration tests against a real API server via envtest
 
 What is deliberately not built is listed at the end, with reasons.
@@ -65,13 +66,17 @@ DaemonSet        ├─► mapToNamespace ─► workqueue ─► Reconcile(name
 CronJob          │                                        │
 NetworkPolicy    │                              snapshot.Collect
 Role             │                                        │
-ServiceAccount  ─┘                              Source.Collect for each source
-                                                 ├─ builtin.Engine   (implemented)
-                                                 └─ trivy.Adapter    (designed)
+ServiceAccount   │                              Source.Collect for each source
+ScanException   ─┘                               ├─ builtin.Engine
+                                                 └─ trivy.Adapter   (when installed)
                                                           │
-                                              sources.Normalize, scoring.Compute
+                                                   sources.Normalize
                                                           │
-                                            CreateOrUpdate report, patch .status
+                                              exceptions.Apply, mark suppressed
+                                                          │
+                                          sources.Truncate, sources.Summarize
+                                                          │
+                                           CreateOrUpdate report, update .status
 ```
 
 Reconcile is keyed on the namespace, never on an individual workload. Any event in the
@@ -106,10 +111,15 @@ Two things prevent that here.
 The `Owns` watch on the report drops update events entirely. It exists so a deleted
 report is recreated, not so status writes feed back into the queue.
 
-`writeStatus` compares the computed score, summary and findings against what is already
-stored and returns without writing when nothing changed and the last scan is recent. This
-also keeps `lastScanTime` from being rewritten every few seconds, which would make the
-resource churn its resourceVersion for no reason.
+`writeStatus` writes on every completed scan, so `lastScanTime` means what its name says.
+An earlier version skipped the write when findings had not changed, which froze the
+timestamp on exactly the namespace you had just edited while untouched namespaces refreshed
+on their shared periodic cadence. That is the wrong way round and it was reported as a bug.
+
+The write is a full status update rather than a merge patch. A merge patch computed from Go
+structs omits fields whose value equals the stored one, so a genuine `suppressed: 0` could
+never be written and the column rendered blank instead of zero. A full update stores what
+the struct says, and a conflict retry handles concurrent writers.
 
 Deterministic ordering is what makes that comparison meaningful. `sources.Normalize`
 sorts findings by severity, then ID, then resource, so two scans of an unchanged
@@ -157,12 +167,62 @@ engine is structurally incapable of answering a whole class of questions: anythi
 requiring image contents, such as CVEs in a base layer, needs a scanner that pulls and
 unpacks images, with registry credentials, real CPU, and a vulnerability database.
 
-Rather than grow this operator into an image scanner, a second source can contribute
-findings into the same report. Every finding records which source produced it.
-`internal/sources/trivy/README.md` documents the adapter and, more usefully, the design
-question that has to be answered before building it.
+Rather than grow this operator into an image scanner, a second source contributes findings
+into the same report. Every finding records which source produced it.
+
+That second source is now built. `internal/sources/trivy` reads the `VulnerabilityReport`
+and `ExposedSecretReport` resources that trivy-operator writes, and the seam needed no
+change to accommodate it, which is the useful evidence that it was drawn in the right
+place.
+
+Two decisions in that adapter are worth stating here because they are not obvious:
+
+**It uses an uncached reader.** A controller-runtime cached client starts an informer the
+first time a type is used, and that fails hard when the CRD does not exist. Since Trivy is
+optional, the adapter reads directly and gates itself on a startup discovery check. The
+same binary runs unchanged on a cluster with no Trivy installed.
+
+**It aggregates rather than enumerating.** A single `VulnerabilityReport` routinely carries
+hundreds of CVEs. One finding per CVE would push a busy namespace past the etcd 1.5 MB
+object limit and the API server would reject the status write outright. Each report
+collapses to one finding per workload and image, listing only the CVEs that have a fixed
+version, since those are the ones actionable today. `--max-findings` caps the whole report
+as a second layer.
+
+`ConfigAuditReport` and `RbacAssessmentReport` are not consumed: KG-001 to KG-013 already
+cover that ground, and ingesting them would report the same privileged container twice.
 
 Nothing else in the codebase has an interface with a single implementer.
+
+## Exceptions
+
+Real clusters contain workloads that legitimately need what a check flags. A node metrics
+agent needs `hostNetwork` and `hostPID`. Reporting it on every scan is worse than useless:
+it trains a reviewer to skim past KG-004, which is exactly the finding that matters when it
+appears somewhere unexpected.
+
+`ScanException` is cluster-scoped rather than an annotation on the workload, for two
+reasons. Exceptions are a governance concern and belong somewhere a security reviewer can
+list them in one command, not scattered across manifests. And most workloads that need an
+exception are third-party — a Helm-installed node-exporter — so requiring an annotation
+would mean forking chart values to record a security decision.
+
+`reason` is required and validated non-empty. An exception without a justification is the
+thing that makes exception systems rot into permanent blanket suppressions.
+
+**Suppressed findings stay in the report**, marked with the exception that accepted them
+and its reason, excluded from the severity counts and counted under `suppressed` instead.
+Deleting them would make an accepted risk indistinguishable from a namespace nobody
+scanned. `critical: 0, suppressed: 2` is a different statement from `critical: 0`, and the
+difference is the whole point.
+
+Expiry is handled by dropping expired exceptions at load time, so there is no reaper and no
+timer. An expired exception stops suppressing at the next scan of its namespace, within one
+`--rescan-interval`.
+
+Editing an exception must re-evaluate every namespace, so the `ScanException` watch fans
+out to all of them. It is the one deliberate fan-out in the controller, and it only fires
+on exception writes, which are rare.
 
 ## API field semantics
 
@@ -172,8 +232,7 @@ descriptions. That trade was made knowingly; the field meanings are here.
 | Field | Meaning |
 |---|---|
 | `spec.namespaceRef` | The namespace this report describes |
-| `status.score` | 0 to 100, higher is better |
-| `status.summary` | Finding counts per severity plus a total |
+| `status.summary` | Finding counts per severity, a total, and a suppressed count |
 | `status.findings[].id` | Stable rule identifier, `KG-001` |
 | `status.findings[].severity` | Enum-validated: `Critical`, `High`, `Medium`, `Low` |
 | `status.findings[].category` | Enum-validated: `PodSecurity`, `Network`, `RBAC`, `SupplyChain`, `Governance` |
@@ -182,7 +241,10 @@ descriptions. That trade was made knowingly; the field meanings are here.
 | `status.findings[].suggestion` | What to do about it |
 | `status.findings[].remediation` | A command or manifest that applies the fix |
 | `status.findings[].reference` | Upstream documentation for the control |
-| `status.findings[].source` | Which `Source` produced the finding |
+| `status.findings[].source` | Which `Source` produced the finding, `builtin` or `trivy` |
+| `status.findings[].suppressed` | True when a `ScanException` accepted this risk |
+| `status.findings[].suppressedBy` | Name of the exception that accepted it |
+| `status.findings[].suppressedReason` | The justification recorded on that exception |
 | `status.conditions` | `ScanSucceeded` reports whether the last scan completed |
 
 Severity and category are named string types with `+kubebuilder:validation:Enum` markers
@@ -190,18 +252,21 @@ rather than bare strings. The legal values are enforced by the API server and vi
 the generated CRD, which is a stronger guarantee than the comment that would otherwise
 have listed them.
 
-## Scoring
+## Why there is no score
 
-`score = max(0, 100 - 20·critical - 10·high - 5·medium - 2·low)`.
+An earlier version scored each namespace out of 100, subtracting per finding by severity.
+It was removed after running against a real cluster.
 
-This is a triage ordering signal, not a risk model. It has known weaknesses: a namespace
-with six medium findings scores worse than one with a single critical, and a large
-namespace accumulates penalties simply for having more workloads. Both are acceptable for
-sorting a `kubectl get nsr` listing, which is what the score is for. Anything more
-defensible needs a notion of exploitability and exposure that this operator does not
-have.
+The heuristic floored at zero, and on the Hamravesh platform cluster five of ten namespaces
+sat at exactly `0`. At that point the number stops discriminating precisely where triage
+matters most, and fixing a critical finding moved nothing, which is the opposite of the
+feedback a remediation loop needs. It also invited comparison between namespaces of
+different sizes, which the heuristic could not support: a large namespace accumulates
+penalties simply for having more workloads.
 
-The severity of each finding is the field to act on. The score is the field to sort by.
+Severity counts carry the same information without implying a precision that was never
+there. `critical: 1, high: 29` is directly actionable; `score: 0` is not.
+
 
 ## Deliberately out of scope
 
@@ -212,9 +277,6 @@ reliable output matters more. These were cut on purpose.
   natural next step, but certificate provisioning, rotation and `failurePolicy` tuning
   are a meaningful chunk of work, and a webhook that fails open is worse than no webhook.
   The requirement asks for detection, not prevention.
-- **Trivy adapter implementation.** Designed and documented. Not built, because whether
-  image findings belong in a per-namespace report is a genuine design question, given the
-  same image usually runs in many namespaces.
 - **Historical trending.** Reports hold current state only. Storing a series of scans
   turns the CRD into a time-series database, which etcd is the wrong store for.
 - **Kubernetes Events per finding.** Noise, as described above.
@@ -223,6 +285,11 @@ reliable output matters more. These were cut on purpose.
 - **A hand-written CI pipeline.** The kubebuilder-scaffolded `lint` and `test` workflows
   under `.github/workflows/` are kept because they work and cost nothing. The scaffolded
   `test-e2e` workflow was removed along with the e2e harness it invoked.
+- **A PolicyReport source.** The Hamravesh cluster already serves
+  `policyreports.wgpolicyk8s.io`, the Kubernetes Policy WG standard that Trivy, Kyverno and
+  Falco can all emit to. One adapter against that standard would pick up every such tool
+  through a single vendor-neutral interface, and would fit the existing `Source` seam. It
+  is the natural next extension, left out because Trivy was the integration asked for.
 - **Cross-namespace and cluster-scoped RBAC analysis.** ClusterRoleBindings that grant
   namespace access from outside are a real gap, and closing it properly needs a
   cluster-wide binding graph rather than a per-namespace snapshot. That is a different
@@ -238,6 +305,11 @@ reliable output matters more. These were cut on purpose.
   automounting. It cannot tell whether that workload actually calls the API, so this is
   a prompt to check rather than proof of a problem.
 - The excluded namespace list is exact-match, not a selector.
+- Trivy detection happens once at startup, so installing trivy-operator after KubeGuardian
+  requires an operator restart before its findings appear.
+- Trivy labels its reports with the workload it actually scanned, which for a Deployment is
+  the active ReplicaSet. Trivy findings therefore name a ReplicaSet where built-in findings
+  name the Deployment.
 
 ## Code style
 

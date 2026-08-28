@@ -4,9 +4,9 @@ Three layers, each answering a different question.
 
 | Layer | Question | Mechanism | Result |
 |---|---|---|---|
-| Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 23 test functions, 79 table cases, all pass |
+| Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 38 test functions, all pass |
 | Integration | Does the controller behave against a real API server? | envtest control plane, manager started | 6 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | kind, image built and deployed | 26 scenarios, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus the exception and Trivy rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -30,7 +30,8 @@ controller ran as a Deployment in `kubeguardian-system` under its generated Clus
 ## Layer 1: unit tests
 
 Checks are pure functions from a namespace snapshot to findings, so they need no cluster.
-Coverage: `internal/checks` 98.6%, `internal/sources` 100%, `internal/scoring` 94.1%.
+Coverage: `internal/checks` 98.6%, `internal/sources` 97.4%, `internal/exceptions` 87.5%,
+`internal/sources/trivy` 76.5%, `internal/controller` 77.4%.
 
 Each rule has its own table-driven test covering the positive case, the compliant case,
 and the edge cases that matter for that rule. Examples of the edge cases covered:
@@ -50,7 +51,20 @@ and the edge cases that matter for that rule. Examples of the edge cases covered
 
 Ordering and aggregation are tested separately in `internal/sources`: severity ordering,
 stability across twenty repeated runs, deduplication, minimum-severity filtering, and
-retention of two distinct findings that share an ID and a resource.
+retention of two distinct findings that share an ID and a resource. `Summarize` is tested
+to confirm suppressed findings are excluded from the severity counts, and `Truncate` to
+confirm it keeps the most severe findings when a report exceeds `--max-findings`.
+
+`internal/exceptions` is table-tested over every matching dimension: check ID, the `*`
+wildcard, namespace list, namespace selector, resource kind alone, resource kind and name,
+the narrowing case where the list matches but the selector does not, expiry in the past and
+the future, and that `Apply` does not mutate its input.
+
+`internal/sources/trivy` is tested over fixture reports: severity taken from the highest
+non-zero count, a clean image producing no finding at all, 300 CVEs collapsing to one
+finding with the remainder counted rather than listed, fixable vulnerabilities preferred
+over unfixable ones in the remediation, duplicate secret titles collapsed, and the
+disabled-adapter path returning no findings and no error.
 
 ## Layer 2: integration tests (envtest)
 
@@ -72,6 +86,10 @@ drift from the code without a test failing.
 
 Every scenario below was executed against the deployed operator. Results are the actual
 observed output.
+
+These were run before scoring was removed, so the captured output still shows a `SCORE`
+column. The behaviour each scenario verifies is unchanged; only that column is gone. The
+second round below re-verifies the current build against the Hamravesh cluster.
 
 ### Discovery and scoping
 
@@ -301,3 +319,100 @@ These are real and observed, not hypothetical.
   secured by several narrower policies that collectively deny ingress is still reported.
 - **KG-012 cannot know whether a workload actually calls the API.** It is a prompt to
   check, not proof of a problem.
+
+
+---
+
+# Second round: exceptions and Trivy
+
+Scoring was removed, `ScanException` was added, and the Trivy adapter was built. All of the
+following was executed against the Hamravesh cluster `interview-mohammadi-c243`. The kind
+cluster was deleted; unit and envtest layers do not need it.
+
+## E1 — the score is gone, suppressed counts are present
+
+```
+NAME                  CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+backup-system         0          1      0        0     0            1s          79m
+hamlb-system          1          11     13       0     3            1s          79m
+monitoring-system     1          29     37       0     2            1s          79m
+platform-system       5          15     28       0     0            1s          79m
+```
+
+No `SCORE` column, and `SUPPRESSED` renders `0` rather than blank.
+
+## E2 — exceptions suppress without hiding
+
+Applying `config/samples/security_v1alpha1_scanexception.yaml`:
+
+```
+                    before                          after
+monitoring-system   CRITICAL 3  SUPPRESSED -        CRITICAL 1  SUPPRESSED 2
+hamlb-system        CRITICAL 3  SUPPRESSED -        CRITICAL 0  SUPPRESSED 3
+```
+
+The findings are still in the report:
+
+```
+KG-004  DaemonSet/vm-stack-prometheus-node-exporter
+  suppressedBy=node-exporter-host-access
+  reason=prometheus node-exporter reads host network and process metrics,
+         which is the purpose of the agent. Reviewed by the platform team.
+```
+
+Both host-namespace findings for node-exporter are suppressed independently, which also
+re-confirms that the KG-004 deduplication fix holds.
+
+## E3 — Trivy integration on a real cluster
+
+trivy-operator 0.36.0 installed into `trivy-system`. KubeGuardian logged
+`Trivy integration enabled` at startup, and findings appeared alongside the built-in ones:
+
+```
+platform-system  TRIVY-VULN  Critical  DaemonSet/kubenurse
+  image postfinance/kubenurse:v1.14.6 has 3 critical, 18 high, 8 medium, 3 low vulnerabilities
+platform-system  TRIVY-VULN  Critical  Pod/network-tcp-github-1787905721
+  image kuberhealthy/network-connection-check:v0.2.0 has 5 critical, 61 high, 32 medium, 1 low vulnerabilities
+hamlb-system     TRIVY-VULN  Critical  StatefulSet/platform-system--hamlb-redis
+  image library/redis:8.10.0-trixie has 3 critical, 7 high, 21 medium, 60 low vulnerabilities
+```
+
+The `network-connection-check` image carries 99 vulnerabilities and produces **one**
+finding, which is the aggregation working as intended.
+
+Remediation is specific and actionable:
+
+```
+CVE-2026-31789: upgrade libcrypto3 to 3.5.6-r0
+CVE-2026-31789: upgrade libssl3 to 3.5.6-r0
+CVE-2025-68121: upgrade stdlib to 1.24.13, 1.25.7, 1.26.0-rc.3
+CVE-2025-69421: upgrade libcrypto3 to 3.5.5-r0
+CVE-2026-28387: upgrade libcrypto3 to 3.5.6-r0
+and 176 further fixable vulnerabilities
+```
+
+Every Trivy finding carries `source: trivy` and `category: SupplyChain`. Zero RBAC errors
+against the new `aquasecurity.github.io` group.
+
+## Defects found in this round
+
+**7. `suppressed: 0` could never be written.** Status was written with a JSON merge patch,
+which omits any field whose value equals the stored one. A genuine zero was therefore never
+persisted and `kubectl get nsr` printed a blank cell instead of `0` — the same class of
+problem as the earlier `omitzero` defect. Status is now written with a full update guarded
+by a conflict retry.
+
+**8. The Helm concurrency limit was silently ignored.** The trivy-operator chart key is
+`operator.scanJobsConcurrentLimit`, not `operator.concurrentScanJobsLimit`. Helm does not
+error on unknown values, so the install reported success while
+`OPERATOR_CONCURRENT_SCAN_JOBS_LIMIT` stayed at its default of 10, and twelve image scans
+ran at once on the platform cluster. Caught by checking the rendered ConfigMap rather than
+trusting the install output.
+
+**9. The trivy-operator chart could not pull its own images.** It defaults to
+`mirror.gcr.io`, which returns 403 from the Hamravesh nodes — the same Google-registry
+block seen locally, so it is a property of the network rather than of one machine. Fixed by
+repointing `image.registry`, `trivy.image.registry`, `trivy.dbRegistry` and
+`trivy.javaDbRegistry` at Docker Hub, which those nodes can reach. Each image was verified
+to exist on Docker Hub before applying the change, rather than risking a second failed
+rollout on their cluster.
