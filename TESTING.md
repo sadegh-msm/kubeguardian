@@ -72,12 +72,13 @@ disabled-adapter path returning no findings and no error.
 
 | Spec | Asserts |
 |---|---|
-| creates a report for a new namespace | Report appears, `spec.namespaceRef` set, owner reference points at the namespace |
+| does not create a report on its own | A new namespace produces no report over a `Consistently` window |
+| populates a report that the user creates | Creating the report in a namespace drives it to `ScanSucceeded=True` |
 | reports findings when an insecure workload is created | Expected finding IDs present, every finding has a suggestion, source is `builtin` |
-| rescans when an existing workload changes | Patching the Deployment removes KG-001 and raises the score |
+| rescans when an existing workload changes | Patching the Deployment removes KG-001 and lowers the critical count |
 | marks the scan as succeeded | `ScanSucceeded` condition is True |
-| flags the insecure namespace | The shipped demo manifest yields the documented IDs, score 0, and exactly two KG-004 findings |
-| clears the findings once the hardened manifest is applied | Score 100, zero findings, KG-001/004/008/010/011/013 all absent |
+| flags the insecure namespace | The shipped demo manifest yields the documented IDs and exactly two KG-004 findings |
+| clears the findings once the hardened manifest is applied | Zero findings, KG-001/004/008/010/011/013 all absent |
 
 The last two apply the real files from `test/demo/`, so the documented walkthrough cannot
 drift from the code without a test failing.
@@ -473,3 +474,39 @@ them is a decision for whoever owns the cluster, not a side effect of installing
 
 The CPU *limit* stays at 500m, so scans still burst; only the scheduling reservation
 shrank. A four-container scan now reserves 100m instead of 400m.
+
+---
+
+# Fourth round: namespaced reports
+
+`NamespaceSecurityReport` moved from cluster-scoped with a `spec.namespaceRef` pointer to
+namespace-scoped, auditing the namespace it lives in.
+
+## N1 — the CRD scope change cannot be applied in place
+
+Confirmed against the live API server before attempting the upgrade:
+
+```
+$ kubectl apply --dry-run=server -f config/crd/bases/...namespacesecurityreports.yaml
+The CustomResourceDefinition "namespacesecurityreports.security.kubeguardian.io"
+is invalid: spec.scope: Invalid value: "Namespaced": field is immutable
+```
+
+The migration therefore deletes and recreates the CRD, which drops existing reports. They
+hold only derived data, so nothing is lost that a rescan does not rebuild. Checking this
+with a server-side dry run first meant the failure surfaced as a message rather than as a
+half-applied deploy.
+
+## N2 — what the migration removed
+
+The namespaced model made three things unrepresentable rather than merely handled:
+
+| Removed | Why it is gone |
+|---|---|
+| `spec.namespaceRef` | `metadata.namespace` is the target; a report cannot point at the wrong namespace |
+| The field index on `spec.namespaceRef` | Workload mapping is "reports in my own namespace" |
+| The `NamespaceNotFound` condition and its code path | A report cannot outlive its namespace |
+
+The spec is now empty. Its own test for a dangling namespace reference was deleted along
+with the state it tested, which is the right outcome: the bug class is designed out rather
+than covered.

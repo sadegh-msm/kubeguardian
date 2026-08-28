@@ -27,7 +27,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,8 +46,6 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 )
-
-const namespaceRefIndex = "spec.namespaceRef"
 
 // NamespaceSecurityReportReconciler reconciles a NamespaceSecurityReport object
 type NamespaceSecurityReportReconciler struct {
@@ -90,12 +87,12 @@ func (r *NamespaceSecurityReportReconciler) Reconcile(ctx context.Context, req c
 	}
 
 	var namespace corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: report.Spec.NamespaceRef}, &namespace); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.V(1).Info("referenced namespace does not exist", "report", report.Name, "namespace", report.Spec.NamespaceRef)
-			return ctrl.Result{RequeueAfter: r.requeueAfter()}, r.recordNamespaceMissing(ctx, &report)
-		}
-		return ctrl.Result{}, fmt.Errorf("get namespace %s: %w", report.Spec.NamespaceRef, err)
+	if err := r.Get(ctx, types.NamespacedName{Name: req.Namespace}, &namespace); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if !namespace.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 
 	snap, err := snapshot.Collect(ctx, r.Client, namespace)
@@ -183,20 +180,6 @@ func (r *NamespaceSecurityReportReconciler) recordScanFailure(
 	})
 }
 
-func (r *NamespaceSecurityReportReconciler) recordNamespaceMissing(
-	ctx context.Context,
-	report *securityv1alpha1.NamespaceSecurityReport,
-) error {
-	return r.updateStatus(ctx, report, func(current *securityv1alpha1.NamespaceSecurityReport) {
-		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
-			Type:    securityv1alpha1.ConditionScanSucceeded,
-			Status:  metav1.ConditionFalse,
-			Reason:  securityv1alpha1.ReasonNamespaceNotFound,
-			Message: fmt.Sprintf("namespace %q does not exist", current.Spec.NamespaceRef),
-		})
-	})
-}
-
 func (r *NamespaceSecurityReportReconciler) updateStatus(
 	ctx context.Context,
 	report *securityv1alpha1.NamespaceSecurityReport,
@@ -258,30 +241,25 @@ func distinctSeverities(summary securityv1alpha1.SeveritySummary) int {
 	return count
 }
 
-func (r *NamespaceSecurityReportReconciler) reportsFor(ctx context.Context, namespace string) []reconcile.Request {
+func (r *NamespaceSecurityReportReconciler) reportsIn(ctx context.Context, namespace string) []reconcile.Request {
 	if namespace == "" {
 		return nil
 	}
 
 	var reports securityv1alpha1.NamespaceSecurityReportList
-	if err := r.List(ctx, &reports, client.MatchingFields{namespaceRefIndex: namespace}); err != nil {
-		logf.FromContext(ctx).Error(err, "listing reports for namespace", "namespace", namespace)
+	if err := r.List(ctx, &reports, client.InNamespace(namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "listing reports", "namespace", namespace)
 		return nil
 	}
-
-	requests := make([]reconcile.Request, 0, len(reports.Items))
-	for _, report := range reports.Items {
-		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: report.Name}})
-	}
-	return requests
+	return requestsFor(reports.Items)
 }
 
 func (r *NamespaceSecurityReportReconciler) reportsForWorkload(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.reportsFor(ctx, obj.GetNamespace())
+	return r.reportsIn(ctx, obj.GetNamespace())
 }
 
 func (r *NamespaceSecurityReportReconciler) reportsForNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.reportsFor(ctx, obj.GetName())
+	return r.reportsIn(ctx, obj.GetName())
 }
 
 func (r *NamespaceSecurityReportReconciler) allReports(ctx context.Context, _ client.Object) []reconcile.Request {
@@ -290,27 +268,21 @@ func (r *NamespaceSecurityReportReconciler) allReports(ctx context.Context, _ cl
 		logf.FromContext(ctx).Error(err, "listing reports for exception fan-out")
 		return nil
 	}
+	return requestsFor(reports.Items)
+}
 
-	requests := make([]reconcile.Request, 0, len(reports.Items))
-	for _, report := range reports.Items {
-		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: report.Name}})
+func requestsFor(reports []securityv1alpha1.NamespaceSecurityReport) []reconcile.Request {
+	requests := make([]reconcile.Request, 0, len(reports))
+	for _, report := range reports {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: report.Namespace, Name: report.Name},
+		})
 	}
 	return requests
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *NamespaceSecurityReportReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	indexer := func(obj client.Object) []string {
-		report, ok := obj.(*securityv1alpha1.NamespaceSecurityReport)
-		if !ok || report.Spec.NamespaceRef == "" {
-			return nil
-		}
-		return []string{report.Spec.NamespaceRef}
-	}
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &securityv1alpha1.NamespaceSecurityReport{}, namespaceRefIndex, indexer); err != nil {
-		return fmt.Errorf("index reports by %s: %w", namespaceRefIndex, err)
-	}
-
+func (r *NamespaceSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	workloadPredicate := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	toReports := handler.EnqueueRequestsFromMapFunc(r.reportsForWorkload)
 

@@ -24,16 +24,14 @@ import (
 const (
 	ConditionScanSucceeded = "ScanSucceeded"
 
-	ReasonScanCompleted     = "ScanCompleted"
-	ReasonScanFailed        = "ScanFailed"
-	ReasonNamespaceNotFound = "NamespaceNotFound"
+	ReasonScanCompleted = "ScanCompleted"
+	ReasonScanFailed    = "ScanFailed"
 )
 
-// NamespaceSecurityReportSpec defines the desired state of NamespaceSecurityReport
+// NamespaceSecurityReportSpec defines the desired state of NamespaceSecurityReport.
+// The report audits the namespace it lives in, so there is nothing to configure;
+// creating the object is the request.
 type NamespaceSecurityReportSpec struct {
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	NamespaceRef string `json:"namespaceRef"`
 }
 
 // NamespaceSecurityReportStatus defines the observed state of NamespaceSecurityReport.
@@ -61,7 +59,7 @@ type NamespaceSecurityReportStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=nsr
+// +kubebuilder:resource:shortName=nsr
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Critical",type=integer,JSONPath=`.status.summary.critical`
 // +kubebuilder:printcolumn:name="High",type=integer,JSONPath=`.status.summary.high`
@@ -70,15 +68,16 @@ type NamespaceSecurityReportStatus struct {
 // +kubebuilder:printcolumn:name="Suppressed",type=integer,JSONPath=`.status.summary.suppressed`
 // +kubebuilder:printcolumn:name="Last-Scan",type=date,JSONPath=`.status.lastScanTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// NamespaceSecurityReport is the Schema for the namespacesecurityreports API
+// NamespaceSecurityReport is the Schema for the namespacesecurityreports API.
+// Create one in a namespace to have that namespace audited.
 type NamespaceSecurityReport struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// +required
-	Spec NamespaceSecurityReportSpec `json:"spec"`
+	// +optional
+	Spec NamespaceSecurityReportSpec `json:"spec,omitzero"`
 
 	// +optional
 	Status NamespaceSecurityReportStatus `json:"status,omitzero"`

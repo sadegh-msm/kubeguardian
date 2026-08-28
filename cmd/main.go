@@ -222,7 +222,7 @@ func main() {
 		RescanInterval: rescanInterval,
 		MinSeverity:    severity,
 		MaxFindings:    maxFindings,
-	}).SetupWithManager(signalCtx, mgr); err != nil {
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "namespacesecurityreport")
 		os.Exit(1)
 	}

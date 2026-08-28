@@ -57,7 +57,7 @@ func applyManifest(path string) {
 
 func demoReport() (*securityv1alpha1.NamespaceSecurityReport, error) {
 	report := &securityv1alpha1.NamespaceSecurityReport{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: demoNamespace}, report)
+	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: demoNamespace, Name: demoNamespace}, report)
 	return report, err
 }
 

@@ -101,7 +101,7 @@ var _ = BeforeSuite(func() {
 		RescanInterval: time.Hour,
 		MinSeverity:    securityv1alpha1.SeverityLow,
 		MaxFindings:    200,
-	}).SetupWithManager(ctx, mgr)
+	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	go func() {

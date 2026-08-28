@@ -62,10 +62,10 @@ func insecureDeployment(namespace string) *appsv1.Deployment {
 	}
 }
 
-func reportFor(name string) func() (*securityv1alpha1.NamespaceSecurityReport, error) {
+func reportFor(namespace string) func() (*securityv1alpha1.NamespaceSecurityReport, error) {
 	return func() (*securityv1alpha1.NamespaceSecurityReport, error) {
 		report := &securityv1alpha1.NamespaceSecurityReport{}
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, report)
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: namespace}, report)
 		return report, err
 	}
 }
@@ -90,8 +90,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 
 	requestReport := func() {
 		Expect(k8sClient.Create(ctx, &securityv1alpha1.NamespaceSecurityReport{
-			ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
-			Spec:       securityv1alpha1.NamespaceSecurityReportSpec{NamespaceRef: namespaceName},
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespaceName, Name: namespaceName},
 		})).To(Succeed())
 	}
 
@@ -118,26 +117,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 
 		report, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(report.Spec.NamespaceRef).To(Equal(namespaceName))
-	})
-
-	It("reports a missing namespace instead of scanning", func() {
-		Expect(k8sClient.Create(ctx, &securityv1alpha1.NamespaceSecurityReport{
-			ObjectMeta: metav1.ObjectMeta{Name: "dangling-" + namespaceName},
-			Spec:       securityv1alpha1.NamespaceSecurityReportSpec{NamespaceRef: "does-not-exist"},
-		})).To(Succeed())
-
-		Eventually(func() []metav1.Condition {
-			report := &securityv1alpha1.NamespaceSecurityReport{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "dangling-" + namespaceName}, report); err != nil {
-				return nil
-			}
-			return report.Status.Conditions
-		}, timeout, interval).Should(ContainElement(And(
-			HaveField("Type", securityv1alpha1.ConditionScanSucceeded),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", securityv1alpha1.ReasonNamespaceNotFound),
-		)))
+		Expect(report.Namespace).To(Equal(namespaceName))
 	})
 
 	It("reports findings when an insecure workload is created", func() {

@@ -17,36 +17,41 @@ The reasoning behind the design, and what was deliberately left out, is in
 
 ## Asking for a scan
 
+Create a report in the namespace you want audited:
+
 ```yaml
 apiVersion: security.kubeguardian.io/v1alpha1
 kind: NamespaceSecurityReport
 metadata:
-  name: payments
-spec:
-  namespaceRef: payments
+  name: posture
+  namespace: payments
 ```
 
-`spec.namespaceRef` names the namespace to audit. The report is cluster-scoped, so its own
-name is free; naming it after the namespace is the obvious convention but nothing depends
-on it, and you can keep several reports against one namespace if that suits your workflow.
+That is the whole object. The report audits the namespace it lives in, so there is nothing
+to configure and no way to point it at the wrong place. Its name is free; `posture` or the
+namespace name are both fine.
 
-If the referenced namespace does not exist, the report says so through its
-`ScanSucceeded` condition with reason `NamespaceNotFound`, rather than silently doing
-nothing or deleting itself.
+The report is namespaced rather than cluster-scoped so a team with access to only their own
+namespace can read their own findings through the RoleBinding they already have, and cannot
+read anyone else's. See DESIGN.md for why that constraint decides the design.
 
-Deleting the report stops the scanning. Nothing else is affected.
+Deleting the report stops the scanning. Deleting the namespace takes the report with it.
 
 ## What a report looks like
 
 ```console
-$ kubectl get namespacesecurityreports
-NAME                CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
-default             0          1      0        0     0            31s         2m
-monitoring-system   1          29     37       0     2            12s         2m
+$ kubectl get nsr -n payments
+NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+posture   0          1      0        0     0            31s         2m
+
+$ kubectl get nsr -A
+NAMESPACE           NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+payments            posture   0          1      0        0     0            31s         2m
+monitoring-system   posture   1          29     37       0     2            12s         2m
 ```
 
 ```console
-$ kubectl get nsr monitoring-system -o yaml
+$ kubectl get nsr posture -n monitoring-system -o yaml
 status:
   summary:
     critical: 1
@@ -126,7 +131,7 @@ directly and watch the counts move:
 kubectl patch deployment legacy-api -n kubeguardian-demo --type=json \
   -p='[{"op":"replace","path":"/spec/template/spec/hostNetwork","value":false}]'
 
-kubectl get nsr kubeguardian-demo -w
+kubectl get nsr -n kubeguardian-demo -w
 ```
 
 ## Deploying into the cluster
@@ -147,6 +152,24 @@ Prefer a distroless or otherwise minimal base in production; `alpine` ships a sh
 
 `make undeploy` removes the controller and `make uninstall` removes the CRD. Removing
 the CRD deletes every report; it does not touch the namespaces themselves.
+
+### Upgrading from a build older than v0.4.0
+
+`NamespaceSecurityReport` was cluster-scoped before v0.4.0. A CRD's `spec.scope` is
+immutable, so `kubectl apply` refuses the change:
+
+```
+The CustomResourceDefinition "namespacesecurityreports.security.kubeguardian.io"
+is invalid: spec.scope: Invalid value: "Namespaced": field is immutable
+```
+
+Delete the CRD first, which also deletes the old reports. They hold only derived data and
+are recreated by asking for a scan again:
+
+```bash
+kubectl delete crd namespacesecurityreports.security.kubeguardian.io
+make deploy IMG=<your-image>
+```
 
 ## Configuration
 

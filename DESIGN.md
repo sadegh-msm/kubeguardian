@@ -44,30 +44,59 @@ is real work for little gain when the report already holds the same information.
 
 ## Report shape and who creates it
 
-The report is **cluster-scoped** and names its target through `spec.namespaceRef`.
+The report is **namespaced**, and it audits the namespace it lives in. There is no
+`spec.namespaceRef`; `metadata.namespace` is the target. The spec is empty.
 
 **The user creates it; the operator never does.** An earlier version reconciled namespaces
-and created a report for each one, which meant every new namespace silently acquired a
-cluster-scoped object nobody asked for. Scanning is now opt-in: the report *is* the
-request, and its status is the answer. That is the more honest reading of a custom
-resource, and it means the set of things being audited is something you declare rather than
-something that accumulates.
+and created a report for each one, which meant every new namespace silently acquired an
+object nobody asked for. Scanning is now opt-in: the report *is* the request, and its
+status is the answer.
 
-The practical consequences:
+### Why namespaced rather than cluster-scoped
 
-- The controller reconciles `NamespaceSecurityReport`, not `Namespace`. Workload events
-  reach it through a field index on `spec.namespaceRef`, so a Deployment change enqueues
-  exactly the reports that name its namespace.
-- No owner reference is set. The object is the user's, and mutating its ownership to make
-  it disappear with the namespace would be a surprise. A report whose namespace is gone
-  instead reports `ScanSucceeded=False` with reason `NamespaceNotFound`, which is visible
-  rather than silent.
-- `--excluded-namespaces` was removed. It existed to stop auto-creation flooding
-  control-plane namespaces; with explicit opt-in it configured nothing, and a flag that
-  does nothing is worse than no flag.
+This started cluster-scoped with a `spec.namespaceRef` pointer. The deciding argument
+against that is RBAC, and it is a hard limitation rather than a preference.
 
-Cluster scope is still right: the report describes a namespace rather than living inside
-it, and several reports against one namespace remain possible.
+Kubernetes RBAC can restrict a rule to named objects with `resourceNames`, but **`list` and
+`watch` cannot be narrowed that way** — a collection request carries no resource name, so
+the authorizer either allows the whole collection or denies it. For a cluster-scoped report,
+a tenant confined to one namespace therefore gets:
+
+```
+kubectl get nsr payments     # works, via resourceNames
+kubectl get nsr              # Forbidden
+```
+
+They cannot discover or watch their own report, and no dashboard or controller that lists
+can work on their behalf. The only alternative is granting cluster-wide read, which exposes
+every other tenant's findings — including which namespaces run privileged containers. In a
+platform that hosts other people's workloads, that is a cross-tenant information leak.
+
+Namespaced, the tenant's existing RoleBinding covers it. They see theirs and only theirs,
+with no new RBAC machinery at all.
+
+Four things fall out for free:
+
+- **Lifecycle.** The report cannot outlive its namespace, so there is no owner reference to
+  set, no finalizer, and no dangling-reference state to represent. An earlier iteration had
+  a `NamespaceNotFound` condition for exactly that case; it is now unrepresentable and the
+  code is gone.
+- **Quota.** Namespaced objects count against `ResourceQuota`, so a tenant can be capped.
+  Cluster-scoped objects cannot be.
+- **Naming.** Report names are scoped, so two tenants cannot collide and no one can squat a
+  useful name globally.
+- **Convention.** trivy-operator, the Policy WG `PolicyReport`, and Kyverno all namespace
+  their per-namespace findings and add a separate `Cluster*` kind for cluster-scoped
+  subjects. Following that keeps the door open for a `ClusterSecurityReport` later without
+  overloading this one.
+
+The only thing given up is the single-command fleet view, and `kubectl get nsr -A` recovers
+it. Genuinely cluster-level findings — ClusterRoleBinding analysis, node configuration —
+want their own kind rather than a cluster-scoped per-namespace one.
+
+`--excluded-namespaces` was removed along the way. It existed to stop auto-creation flooding
+control-plane namespaces; with explicit opt-in it configured nothing, and a flag that does
+nothing is worse than no flag.
 
 ## Reconcile flow
 
@@ -76,7 +105,7 @@ NamespaceSecurityReport ─┐   created by the user, never by the operator
 Namespace                │
 Deployment               │
 StatefulSet              │
-DaemonSet                ├─► index on spec.namespaceRef ─► Reconcile(report)
+DaemonSet                ├─► reports in that namespace ─► Reconcile(report)
 CronJob                  │                                       │
 NetworkPolicy            │                             snapshot.Collect
 Role                     │                                       │
@@ -106,10 +135,12 @@ This is the requirement most likely to be implemented badly, so it is worth bein
 explicit about the mechanism.
 
 `For(&NamespaceSecurityReport{})` alone would only reconcile when a report changed. Workload
-events reach the right reports through a field index on `spec.namespaceRef`: given a
-Deployment in `payments`, the map function lists the reports that name `payments` and
-enqueues those. An object in a namespace nobody asked to audit maps to zero requests and
-costs nothing.
+events reach the right reports by listing the reports in the workload's own namespace:
+given a Deployment in `payments`, the map function enqueues every report in `payments`. An
+object in a namespace nobody asked to audit maps to zero requests and costs nothing.
+
+This is the mapping the cluster-scoped design needed a field index on `spec.namespaceRef`
+to achieve. Namespacing the report made the index unnecessary.
 
 Workload watches carry `predicate.GenerationChangedPredicate`. Without it, every replica
 count update written by the deployment controller would trigger a full namespace rescan.
@@ -243,12 +274,12 @@ on exception writes, which are rare.
 
 ## API field semantics
 
-The API types carry no doc comments, which means `kubectl explain` returns empty
-descriptions. That trade was made knowingly; the field meanings are here.
+The API types carry kubebuilder doc comments, so `kubectl explain` works and the generated
+CRD carries descriptions. The field meanings are collected here as well.
 
 | Field | Meaning |
 |---|---|
-| `spec.namespaceRef` | The namespace this report describes |
+| `metadata.namespace` | The namespace this report audits; the spec is empty |
 | `status.summary` | Finding counts per severity, a total, and a suppressed count |
 | `status.findings[].id` | Stable rule identifier, `KG-001` |
 | `status.findings[].severity` | Enum-validated: `Critical`, `High`, `Medium`, `Low` |
@@ -265,9 +296,9 @@ descriptions. That trade was made knowingly; the field meanings are here.
 | `status.conditions` | `ScanSucceeded` reports whether the last scan completed |
 
 Severity and category are named string types with `+kubebuilder:validation:Enum` markers
-rather than bare strings. The legal values are enforced by the API server and visible in
-the generated CRD, which is a stronger guarantee than the comment that would otherwise
-have listed them.
+rather than bare strings. The legal values are enforced by the API server rather than
+merely documented, so an invalid value is rejected at admission instead of discovered by a
+consumer.
 
 ## Why there is no score
 

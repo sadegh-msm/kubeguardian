@@ -14,7 +14,7 @@ spec:
     shortNames:
     - nsr
     singular: namespacesecurityreport
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.summary.critical
@@ -41,8 +41,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: NamespaceSecurityReport is the Schema for the namespacesecurityreports
-          API
+        description: |-
+          NamespaceSecurityReport is the Schema for the namespacesecurityreports API.
+          Create one in a namespace to have that namespace audited.
         properties:
           apiVersion:
             description: |-
@@ -62,14 +63,10 @@ spec:
           metadata:
             type: object
           spec:
-            description: NamespaceSecurityReportSpec defines the desired state of
-              NamespaceSecurityReport
-            properties:
-              namespaceRef:
-                minLength: 1
-                type: string
-            required:
-            - namespaceRef
+            description: |-
+              NamespaceSecurityReportSpec defines the desired state of NamespaceSecurityReport.
+              The report audits the namespace it lives in, so there is nothing to configure;
+              creating the object is the request.
             type: object
           status:
             description: NamespaceSecurityReportStatus defines the observed state
@@ -219,8 +216,6 @@ spec:
                     type: integer
                 type: object
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true

@@ -7,8 +7,7 @@ apiVersion: security.kubeguardian.io/v1alpha1
 kind: NamespaceSecurityReport
 metadata:
   name: kubeguardian-demo
-spec:
-  namespaceRef: kubeguardian-demo
+  namespace: kubeguardian-demo
 ---
 apiVersion: apps/v1
 kind: Deployment
