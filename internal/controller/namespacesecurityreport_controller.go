@@ -1,8 +1,25 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"time"
 
@@ -11,7 +28,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +47,7 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 )
 
+// NamespaceSecurityReportReconciler reconciles a NamespaceSecurityReport object
 type NamespaceSecurityReportReconciler struct {
 	client.Client
 	Scheme             *runtime.Scheme
@@ -50,6 +67,11 @@ type NamespaceSecurityReportReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch
 
+// Reconcile is part of the main kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state.
+//
+// For more details, check Reconcile and its Result here:
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *NamespaceSecurityReportReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -88,7 +110,7 @@ func (r *NamespaceSecurityReportReconciler) Reconcile(ctx context.Context, req c
 	}
 
 	log.V(1).Info("namespace scanned", "namespace", namespace.Name, "score", score, "findings", len(findings))
-	return ctrl.Result{RequeueAfter: r.rescanInterval()}, nil
+	return ctrl.Result{RequeueAfter: r.requeueAfter()}, nil
 }
 
 func (r *NamespaceSecurityReportReconciler) runSources(ctx context.Context, snap *snapshot.Snapshot) ([]securityv1alpha1.Finding, error) {
@@ -123,14 +145,6 @@ func (r *NamespaceSecurityReportReconciler) writeStatus(
 	score int,
 	summary securityv1alpha1.SeveritySummary,
 ) error {
-	unchanged := report.Status.Score == score &&
-		apiequality.Semantic.DeepEqual(report.Status.Summary, summary) &&
-		apiequality.Semantic.DeepEqual(report.Status.Findings, findings)
-
-	if unchanged && time.Since(report.Status.LastScanTime.Time) < r.rescanInterval() {
-		return nil
-	}
-
 	patch := client.MergeFrom(report.DeepCopy())
 	report.Status.Score = score
 	report.Status.Summary = summary
@@ -177,6 +191,15 @@ func (r *NamespaceSecurityReportReconciler) rescanInterval() time.Duration {
 	return r.RescanInterval
 }
 
+func (r *NamespaceSecurityReportReconciler) requeueAfter() time.Duration {
+	base := r.rescanInterval()
+	spread := int64(base) / 5
+	if spread <= 0 {
+		return base
+	}
+	return base - time.Duration(spread/2) + time.Duration(rand.Int64N(spread))
+}
+
 func (r *NamespaceSecurityReportReconciler) minSeverity() securityv1alpha1.Severity {
 	if r.MinSeverity == "" {
 		return securityv1alpha1.SeverityLow
@@ -194,6 +217,7 @@ func distinctSeverities(summary securityv1alpha1.SeveritySummary) int {
 	return count
 }
 
+// SetupWithManager sets up the controller with the Manager.
 func (r *NamespaceSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	workloadPredicate := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	toNamespace := handler.EnqueueRequestsFromMapFunc(mapToNamespace)
