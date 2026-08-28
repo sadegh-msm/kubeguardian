@@ -1,0 +1,33 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: ScanException
+metadata:
+  name: node-exporter-host-access
+spec:
+  reason: >-
+    prometheus node-exporter reads host network and process metrics, which is
+    the purpose of the agent. Reviewed by the platform team.
+  checks:
+    - KG-004
+  namespaces:
+    - monitoring-system
+  resources:
+    - kind: DaemonSet
+      name: vm-stack-prometheus-node-exporter
+---
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: ScanException
+metadata:
+  name: hamlb-gateway-host-access
+spec:
+  reason: >-
+    the load balancer gateway terminates traffic on the node network and needs
+    privileged access to configure it. Re-review before 2027.
+  expiresAt: "2027-01-01T00:00:00Z"
+  checks:
+    - KG-001
+    - KG-004
+  namespaces:
+    - hamlb-system
+  resources:
+    - kind: DaemonSet
+      name: platform-system--hamlb-gateway
