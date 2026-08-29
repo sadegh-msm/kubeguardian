@@ -102,7 +102,24 @@ func (s *Scanner) reconcile(ctx context.Context, obj report, kind string) (ctrl.
 
 	log.V(1).Info("namespace scanned", "namespace", namespace.Name, "kind", kind,
 		"findings", summary.Total, "suppressed", summary.Suppressed)
-	return ctrl.Result{RequeueAfter: s.requeueAfter()}, nil
+	return ctrl.Result{RequeueAfter: s.nextRequeue(accepted.NextExpiry(namespace))}, nil
+}
+
+// nextRequeue picks the sooner of the periodic rescan and the moment the next
+// exception stops suppressing. A zero RescanInterval means the report is driven
+// entirely by events, and then an expiry deadline is the only reason to come
+// back on a timer at all.
+func (s *Scanner) nextRequeue(deadline *time.Time) time.Duration {
+	periodic := s.requeueAfter()
+	if deadline == nil {
+		return periodic
+	}
+
+	until := time.Until(*deadline) + time.Second
+	if until > 0 && (periodic == 0 || until < periodic) {
+		return until
+	}
+	return periodic
 }
 
 func (s *Scanner) runSources(ctx context.Context, snap *snapshot.Snapshot) ([]securityv1alpha1.Finding, error) {
@@ -186,15 +203,16 @@ func (s *Scanner) updateStatus(ctx context.Context, obj report, mutate func(repo
 	})
 }
 
-func (s *Scanner) rescanInterval() time.Duration {
-	if s.RescanInterval <= 0 {
-		return 10 * time.Minute
-	}
-	return s.RescanInterval
-}
-
+// requeueAfter spreads the periodic rescan over ±10% of the interval. Without
+// that, reports created together rescan together forever, and the operator
+// alternates between doing nothing and scanning every namespace at once. A
+// RescanInterval of zero or less turns the periodic rescan off entirely.
 func (s *Scanner) requeueAfter() time.Duration {
-	base := s.rescanInterval()
+	if s.RescanInterval <= 0 {
+		return 0
+	}
+
+	base := s.RescanInterval
 	spread := int64(base) / 5
 	if spread <= 0 {
 		return base

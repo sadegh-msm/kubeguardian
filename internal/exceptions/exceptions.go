@@ -74,6 +74,29 @@ func (s *Set) Apply(namespace corev1.Namespace, findings []securityv1alpha1.Find
 	return out
 }
 
+// NextExpiry returns the earliest moment at which an exception that could apply
+// to this namespace stops applying, or nil if none of them expire. Expiry is the
+// one thing about a report that changes on its own: no object is written when a
+// timestamp passes, so there is no event to watch for. A caller can requeue on
+// this instead of polling.
+func (s *Set) NextExpiry(namespace corev1.Namespace) *time.Time {
+	if s == nil {
+		return nil
+	}
+
+	var earliest *time.Time
+	for _, item := range s.items {
+		if item.Spec.ExpiresAt == nil || !matchesNamespace(item.Spec, namespace) {
+			continue
+		}
+		at := item.Spec.ExpiresAt.Time
+		if earliest == nil || at.Before(*earliest) {
+			earliest = &at
+		}
+	}
+	return earliest
+}
+
 func (s *Set) match(namespace corev1.Namespace, finding securityv1alpha1.Finding) (securityv1alpha1.ScanException, bool) {
 	for _, item := range s.items {
 		if matchesCheck(item.Spec.Checks, finding.ID) &&

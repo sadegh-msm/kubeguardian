@@ -223,7 +223,7 @@ The controller is configured with flags on the manager binary.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--rescan-interval` | `10m` | How often each namespace is rescanned even when no workload event arrives, so drift and clock-dependent findings are still caught. |
+| `--rescan-interval` | `3h` | How often an `ImageSecurityReport` is rescanned. It is the only way new Trivy scan data arrives, because Trivy's reports cannot be watched. `ManifestSecurityReport` ignores this: everything its checks read is watched, so it rescans on change. |
 | `--min-severity` | `Low` | Lowest severity recorded in a report. Set to `High` to keep reports focused on what matters most. |
 | `--max-findings` | `200` | Upper bound on findings per report. The least severe are dropped first, so a pathological namespace cannot produce an object the API server refuses. |
 | `--leader-elect` | `false` | Enable when running more than one replica. |
@@ -335,8 +335,10 @@ nothing outstanding". Nothing is hidden.
 broad one is deliberate and visible. When both `namespaces` and `namespaceSelector` are
 set, both must match.
 
-An expired exception simply stops suppressing at the next scan of that namespace, which is
-within one `--rescan-interval`.
+`expiresAt` is honoured to the second rather than polled for. When a report is scanned,
+the controller finds the earliest expiry among the exceptions that could apply to that
+namespace and schedules its next reconcile for exactly that moment. The suppression lifts
+when the exception expires, not up to a rescan interval later.
 
 ```console
 $ kubectl get scanexceptions

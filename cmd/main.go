@@ -71,8 +71,9 @@ func main() {
 	var rescanInterval time.Duration
 	var minSeverity string
 	var maxFindings int
-	flag.DurationVar(&rescanInterval, "rescan-interval", 10*time.Minute,
-		"How often every namespace is rescanned even when no workload event arrives.")
+	flag.DurationVar(&rescanInterval, "rescan-interval", 3*time.Hour,
+		"How often an ImageSecurityReport is rescanned. Manifest reports do not use this: "+
+			"everything they read is watched, so they rescan on change instead.")
 	flag.StringVar(&minSeverity, "min-severity", string(securityv1alpha1.SeverityLow),
 		"Lowest severity recorded in a report. One of Critical, High, Medium, Low.")
 	flag.IntVar(&maxFindings, "max-findings", 200,
@@ -223,13 +224,16 @@ func main() {
 		setupLog.Info("Trivy integration disabled, aquasecurity.github.io reports not found in this cluster")
 	}
 
+	// Manifest reports are driven entirely by events. Every object their checks
+	// read is watched, so there is nothing a periodic rescan would discover. The
+	// exception is a ScanException expiring, and the scanner requeues on that
+	// deadline exactly rather than polling for it.
 	if err := (&controller.ManifestSecurityReportReconciler{
 		Scanner: controller.Scanner{
-			Client:         mgr.GetClient(),
-			Sources:        []sources.Source{builtin.NewEngine(), podSecuritySource},
-			RescanInterval: rescanInterval,
-			MinSeverity:    severity,
-			MaxFindings:    maxFindings,
+			Client:      mgr.GetClient(),
+			Sources:     []sources.Source{builtin.NewEngine(), podSecuritySource},
+			MinSeverity: severity,
+			MaxFindings: maxFindings,
 		},
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {

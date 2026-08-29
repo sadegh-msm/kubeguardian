@@ -100,11 +100,10 @@ var _ = BeforeSuite(func() {
 
 	err = (&ManifestSecurityReportReconciler{
 		Scanner: Scanner{
-			Client:         mgr.GetClient(),
-			Sources:        []sources.Source{builtin.NewEngine(), podSecurity},
-			RescanInterval: time.Hour,
-			MinSeverity:    securityv1alpha1.SeverityLow,
-			MaxFindings:    200,
+			Client:      mgr.GetClient(),
+			Sources:     []sources.Source{builtin.NewEngine(), podSecurity},
+			MinSeverity: securityv1alpha1.SeverityLow,
+			MaxFindings: 200,
 		},
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)

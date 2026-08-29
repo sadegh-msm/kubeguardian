@@ -7,9 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - limitranges
   - namespaces
-  - resourcequotas
   - serviceaccounts
   verbs:
   - get
@@ -53,7 +51,6 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
-  - rolebindings
   - roles
   verbs:
   - get

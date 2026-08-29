@@ -212,3 +212,68 @@ func TestApplyDoesNotMutateInput(t *testing.T) {
 		t.Fatal("Apply must not mutate the findings it was given")
 	}
 }
+
+func TestNextExpiryReportsTheEarliestDeadlineThatAppliesHere(t *testing.T) {
+	soon := metav1.NewTime(now.Add(time.Hour))
+	later := metav1.NewTime(now.Add(4 * time.Hour))
+
+	cases := []struct {
+		name  string
+		items []securityv1alpha1.ScanException
+		want  *time.Time
+	}{
+		{
+			name: "nothing expires",
+			items: []securityv1alpha1.ScanException{
+				exception("forever", securityv1alpha1.ScanExceptionSpec{Checks: []string{checkHostNS}}),
+			},
+			want: nil,
+		},
+		{
+			name: "the earliest of several wins",
+			items: []securityv1alpha1.ScanException{
+				exception("later", securityv1alpha1.ScanExceptionSpec{Checks: []string{checkHostNS}, ExpiresAt: &later}),
+				exception("soon", securityv1alpha1.ScanExceptionSpec{Checks: []string{checkHostNS}, ExpiresAt: &soon}),
+			},
+			want: &soon.Time,
+		},
+		{
+			name: "an exception for another namespace is not our deadline",
+			items: []securityv1alpha1.ScanException{
+				exception("elsewhere", securityv1alpha1.ScanExceptionSpec{
+					Checks:     []string{checkHostNS},
+					Namespaces: []string{"payments"},
+					ExpiresAt:  &soon,
+				}),
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := New(tc.items, now).NextExpiry(namespace(nsMonitoring, nil))
+
+			switch {
+			case tc.want == nil && got != nil:
+				t.Fatalf("got %s, want no deadline", got)
+			case tc.want != nil && got == nil:
+				t.Fatalf("got no deadline, want %s", tc.want)
+			case tc.want != nil && !got.Equal(*tc.want):
+				t.Fatalf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNextExpiryIgnoresAlreadyExpiredExceptions(t *testing.T) {
+	past := metav1.NewTime(now.Add(-time.Hour))
+
+	set := New([]securityv1alpha1.ScanException{
+		exception("stale", securityv1alpha1.ScanExceptionSpec{Checks: []string{checkHostNS}, ExpiresAt: &past}),
+	}, now)
+
+	if got := set.NextExpiry(namespace(nsMonitoring, nil)); got != nil {
+		t.Fatalf("got %s, want no deadline: an expired exception has nothing left to expire", got)
+	}
+}

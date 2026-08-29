@@ -210,15 +210,40 @@ report rescans immediately, which is the fast path that matters. It does not wat
 NetworkPolicy, Role or ServiceAccount, because none of them can change what is inside an
 image.
 
-A `RequeueAfter` of `--rescan-interval` backs the watches up, so posture drift is caught
-even in a namespace that produces no events at all. For the image report this is the main
-path rather than a backstop: Trivy's own reports cannot be watched, because the adapter
-reads them with an uncached client precisely so the optional CRDs need not exist.
+### Only the image report rescans on a timer
+
+`--rescan-interval` defaults to three hours and applies to `ImageSecurityReport` alone.
+`ManifestSecurityReport` has no periodic rescan at all.
+
+That asymmetry follows from what each one reads. The manifest checks read exactly five
+things — the four workload kinds through `Snapshot.Workloads()`, plus `NetworkPolicies`,
+`ServiceAccounts`, `Roles` and the `Namespace` — and every one of them is watched. A
+periodic rescan could not discover anything a watch has not already delivered, so it would
+only rewrite an identical status on a timer. The image report is the opposite case: Trivy's
+`VulnerabilityReport`s are read with an uncached client so the optional CRDs need not
+exist, which means they cannot be watched, and the timer is the only path new scan data
+has.
+
+One thing does change without an event, and it changes for both kinds: a `ScanException`
+reaching its `expiresAt`. No object is written when a timestamp passes. Rather than poll
+for it, `Scanner.nextRequeue` takes the earliest expiry among the exceptions that could
+apply to the namespace and requeues for exactly that moment, so a suppression lifts on
+time rather than up to an interval late. When there is no expiry and no periodic interval,
+the reconcile returns no requeue at all and the report simply waits for an event.
+
+The controller-runtime cache resync, ten hours by default, is the backstop against a
+dropped watch event. It re-delivers updates for every cached object, and the
+NetworkPolicy, Role, ServiceAccount and Namespace watches carry no predicate, so every
+namespace gets a free full rescan on that cycle without anything being configured for it.
+
+Three lists were removed from `snapshot.Collect` while establishing the above:
+`RoleBindings`, `ResourceQuotas` and `LimitRanges` were collected and read by nothing. They
+cost three cluster-wide informers and their RBAC for data no check consults.
 
 ## The unit of work is the namespace, not the workload
 
 A workload event does not rescan that workload. It rescans the namespace the workload is
-in: `snapshot.Collect` lists all ten resource types, and every source evaluates every
+in: `snapshot.Collect` lists all seven resource types, and every source evaluates every
 workload. This is deliberate, and it is worth saying why, because "rescan only what
 changed" is the obvious alternative.
 
@@ -535,6 +560,10 @@ reliable output matters more. These were cut on purpose.
   `resource.container` empty, because `policy.CheckResult` reports a violated control
   rather than a path into the pod spec. The container name appears in the message instead,
   and the remediation is a YAML snippet rather than a `kubectl patch` command.
+- A `ManifestSecurityReport` has no periodic rescan, so a finding that depends on state
+  nothing watches would go stale. Today none does: every object its checks read is watched,
+  and the one time-dependent input, `ScanException` expiry, is requeued on its deadline. A
+  future check that reads something unwatched would have to add the watch with it.
 - Trivy detection happens once at startup, so installing trivy-operator after KubeGuardian
   requires an operator restart before its findings appear. Until then every
   `ImageSecurityReport` reports `ScannerUnavailable`, which is at least visible rather than

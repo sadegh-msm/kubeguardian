@@ -6,7 +6,7 @@ Three layers, each answering a different question.
 |---|---|---|---|
 | Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
 | Integration | Do the controllers behave against a real API server? | envtest control plane, both managers started | 12 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus six later rounds, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus seven later rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -930,3 +930,110 @@ No resources found in kg-split-check namespace.
 ```
 
 The controller log shows no errors and no RBAC denials across the whole round.
+
+---
+
+# Eighth round: why LAST-SCAN kept moving on its own
+
+Reports were resetting their `LAST-SCAN` in namespaces nobody had touched. This round
+establishes what was causing it, and what changed as a result.
+
+## C1 — it was the periodic rescan, measured
+
+Every report was sampled every 20 seconds for 13 minutes and the gaps between distinct
+`lastScanTime` values recorded. 27 rescans across 22 reports:
+
+```
+541 543 544 545 550 554 558 566 574 576 580 598 606 608 610 616
+616 616 618 621 628 633 646 651 653 653 654
+
+min 9m01s   max 10m54s   mean 9m58s
+```
+
+Every gap falls inside **[9m, 11m)**, which is exactly what `requeueAfter` produced from a
+10 minute interval: `base - base/10 + rand[0, base/5)`. The ±10% jitter is why they did not
+move together, and that is what made it look arbitrary from outside.
+
+Nothing was reacting to an event. The resourceVersion of all 206 watched objects was
+snapshotted three minutes apart, and exactly one moved: a `kube-system` DaemonSet whose
+generation did not change, so `GenerationChangedPredicate` drops it, in a namespace with no
+report anyway.
+
+## C2 — the manifest report does not need a timer
+
+Auditing what the manifest checks actually read settled it:
+
+```
+kg007_read_only_root_filesystem.go   snap.Workloads
+kg010_default_deny_network_policy.go snap.NetworkPolicies snap.Workloads
+kg011_pod_security_admission_labels.go snap.Namespace
+kg012_default_service_account_token.go snap.ServiceAccounts snap.Workloads
+kg013_wildcard_rbac.go               snap.Roles
+kg020_image_tag.go                   snap.Workloads
+kg021_resource_limits.go             snap.Workloads
+```
+
+Five inputs — the four workload kinds behind `Workloads()`, plus NetworkPolicies,
+ServiceAccounts, Roles and the Namespace — and every one is watched. A periodic rescan
+could not discover anything a watch had not already delivered; it only rewrote an identical
+status on a timer. `ManifestSecurityReport` now has no periodic rescan at all, and
+`--rescan-interval` defaults to `3h` and governs `ImageSecurityReport` alone, which needs
+it because Trivy's reports cannot be watched.
+
+The same audit found `RoleBindings`, `ResourceQuotas` and `LimitRanges` were collected by
+`snapshot.Collect` and read by no check at all. They were removed, along with their RBAC:
+three cluster-wide informers for data nothing consulted.
+
+## C3 — expiry is a deadline, not a poll
+
+One thing about a manifest report does change without an event: a `ScanException` reaching
+`expiresAt`. Removing the periodic rescan would have left an expired exception suppressing
+a finding until something else in the namespace happened to change.
+
+`Scanner.nextRequeue` takes the earliest expiry among the exceptions that could apply to
+the namespace and requeues for that moment plus a second. Verified on the cluster with an
+exception set to expire at 15:37:37:
+
+```
+15:35:08   suppressed=1  crit=0   lastScanTime=15:35:08   exception created
+15:37:11   suppressed=1  crit=0   lastScanTime=15:35:08   26s before expiry, no polling in between
+15:38:21   suppressed=0  crit=1   lastScanTime=15:37:38   one second after expiry
+```
+
+The report woke exactly once, one second after the deadline. Under the old design this
+would have taken up to a full rescan interval, and under the new interval it would have
+taken up to three hours.
+
+## C4 — the event path still works
+
+A scratch namespace with a privileged Deployment and a `ManifestSecurityReport`:
+
+```
+create        lastScanTime=15:33:44  critical=1
++40s idle     lastScanTime=15:33:44  unchanged
+patch away privileged
++15s          lastScanTime=15:34:39  critical=0
+```
+
+Idle means idle; an edit is picked up within seconds.
+
+## C5 — fifteen minutes on the live cluster
+
+`v0.7.0` deployed, then every report sampled every 20 seconds for 15 minutes. Three
+rescans happened in that window, all cluster-wide, and every one has a cause:
+
+```
+15:33:20   22 reports   the rollout: a new leader's informers deliver initial events
+15:35:08   22 reports   a ScanException was created
+15:38:30   22 reports   that ScanException was deleted
+```
+
+Zero timer-driven rescans, where the previous build would have produced about 22. Eleven
+minutes after the last of them, every report still read `LAST-SCAN 10m` and climbing.
+
+Worth noting for later: creating or deleting **any** `ScanException` rescans every report
+in the cluster, because the fan-out maps to all of them. That is correct — an exception
+with no `namespaces` and no `namespaceSelector` matches everywhere — but it is now the
+largest remaining source of a synchronised rescan, and on a cluster with thousands of
+namespaces it would be a thundering herd. Narrowing it to the namespaces an exception names
+is possible and is not done here.

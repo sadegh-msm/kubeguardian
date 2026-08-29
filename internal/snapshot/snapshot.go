@@ -62,9 +62,6 @@ type Snapshot struct {
 	NetworkPolicies []networkingv1.NetworkPolicy
 	ServiceAccounts []corev1.ServiceAccount
 	Roles           []rbacv1.Role
-	RoleBindings    []rbacv1.RoleBinding
-	ResourceQuotas  []corev1.ResourceQuota
-	LimitRanges     []corev1.LimitRange
 
 	workloads []Workload
 }
@@ -129,15 +126,6 @@ func Collect(ctx context.Context, c client.Reader, namespace corev1.Namespace) (
 		}},
 		{"Role", &rbacv1.RoleList{}, func(l client.ObjectList) {
 			snap.Roles = l.(*rbacv1.RoleList).Items
-		}},
-		{"RoleBinding", &rbacv1.RoleBindingList{}, func(l client.ObjectList) {
-			snap.RoleBindings = l.(*rbacv1.RoleBindingList).Items
-		}},
-		{"ResourceQuota", &corev1.ResourceQuotaList{}, func(l client.ObjectList) {
-			snap.ResourceQuotas = l.(*corev1.ResourceQuotaList).Items
-		}},
-		{"LimitRange", &corev1.LimitRangeList{}, func(l client.ObjectList) {
-			snap.LimitRanges = l.(*corev1.LimitRangeList).Items
 		}},
 	}
 
