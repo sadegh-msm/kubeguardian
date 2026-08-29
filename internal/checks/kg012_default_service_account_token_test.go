@@ -39,7 +39,7 @@ func TestDefaultServiceAccountToken(t *testing.T) {
 		return snap
 	}
 
-	base := podSpec(secureContainer(testContainer))
+	base := podSpec(secureContainer())
 
 	dedicated := base
 	dedicated.ServiceAccountName = testContainer

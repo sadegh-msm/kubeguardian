@@ -24,7 +24,7 @@ import (
 
 func TestMutableImageTag(t *testing.T) {
 	withImage := func(image string) corev1.PodSpec {
-		container := secureContainer(testContainer)
+		container := secureContainer()
 		container.Image = image
 		return podSpec(container)
 	}

@@ -47,19 +47,19 @@ posture   0          1      0        0     0            31s         2m
 $ kubectl get nsr -A
 NAMESPACE           NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
 payments            posture   0          1      0        0     0            31s         2m
-monitoring-system   posture   1          29     37       0     2            12s         2m
+monitoring-system   posture   9          17     31       0     1            12s         2m
 ```
 
 ```console
 $ kubectl get nsr posture -n monitoring-system -o yaml
 status:
   summary:
-    critical: 1
-    high: 29
-    medium: 37
+    critical: 9
+    high: 17
+    medium: 31
     low: 0
-    total: 67
-    suppressed: 2
+    total: 57
+    suppressed: 1
   findings:
     - id: KG-001
       severity: Critical
@@ -67,20 +67,20 @@ status:
       resource:
         kind: Deployment
         name: legacy-api
-        container: api
-      message: container "api" runs privileged, which grants full access to host devices
-        and bypasses every kernel capability restriction
+      message: 'baseline Pod Security Standard, privileged: container "api" must not set
+        securityContext.privileged=true'
       suggestion: Set securityContext.privileged to false and add back only the individual
         capabilities the container genuinely needs.
-      remediation: kubectl patch deployment legacy-api -n kubeguardian-demo --type=json
-        -p='[{"op":"replace","path":"/spec/template/spec/containers/0/securityContext/privileged","value":false}]'
+      remediation: |-
+        securityContext:
+          privileged: false
       reference: https://kubernetes.io/docs/concepts/security/pod-security-standards/
-      source: builtin
+      source: pod-security
   conditions:
     - type: ScanSucceeded
       status: "True"
       reason: ScanCompleted
-      message: 67 finding(s) across 3 severity level(s), 2 suppressed by exception
+      message: 57 finding(s) across 3 severity level(s), 1 suppressed by exception
   lastScanTime: "2026-08-27T17:50:54Z"
 ```
 
@@ -110,7 +110,7 @@ make demo
 ```
 
 That applies `test/demo/01-insecure-namespace.yaml`, waits a moment, and prints the
-report. It produces fifteen findings, three of them critical.
+report. It produces fifteen findings, two of them critical.
 
 An untouched `default` namespace usually reports a single high finding: it has no
 workloads, so most checks do not apply, but it does not enforce a Pod Security Standard.
@@ -186,30 +186,66 @@ The controller is configured with flags on the manager binary.
 
 Every finding carries an identifier from this table. Severities are fixed per check.
 
+Pod-level findings are produced by the upstream
+[`k8s.io/pod-security-admission`](https://pkg.go.dev/k8s.io/pod-security-admission)
+library rather than by rules written here, so they are exactly the Pod Security Standards
+as Kubernetes publishes them. KubeGuardian evaluates every pod template at both the
+`baseline` and `restricted` level and maps each upstream check onto a `KG-` identifier:
+
+| ID | Check | Severity | Upstream check |
+|---|---|---|---|
+| KG-001 | Container runs privileged | Critical | `privileged` |
+| KG-002 | Container may run as root | High | `runAsNonRoot`, `runAsUser` |
+| KG-003 | Privilege escalation is not disabled | High | `allowPrivilegeEscalation` |
+| KG-004 | Pod shares a host namespace (`hostNetwork`, `hostPID`, `hostIPC`) | Critical | `hostNamespaces` |
+| KG-005 | Pod mounts a `hostPath` volume | High | `hostPathVolumes` |
+| KG-006 | Container does not drop all Linux capabilities | Medium | `capabilities_baseline`, `capabilities_restricted` |
+| KG-008 | Container sets no seccomp profile, or sets it to `Unconfined` | Medium | `seccompProfile_baseline`, `seccompProfile_restricted` |
+| KG-030 | Container binds a port on the node | High | `hostPorts` |
+| KG-031 | Windows container runs as a HostProcess container | Critical | `windowsHostProcess` |
+| KG-032 | Container unmasks `/proc` | High | `procMount`, `procMount_restricted` |
+| KG-033 | Container runs unconfined by AppArmor | Medium | `appArmorProfile` |
+| KG-034 | Container overrides its SELinux type or user | Medium | `seLinuxOptions` |
+| KG-035 | Pod sets a sysctl outside the safe set | Medium | `sysctls` |
+| KG-036 | Probe or lifecycle hook targets a host address | Medium | `hostProbesAndHostLifecycle` |
+| KG-037 | Pod uses a volume type `restricted` does not permit | Medium | `restrictedVolumes` |
+
+The rest are written here, because nothing upstream evaluates them. They are namespace
+and governance concerns rather than pod-security ones:
+
 | ID | Check | Severity | Category |
 |---|---|---|---|
-| KG-001 | Container runs privileged | Critical | PodSecurity |
-| KG-002 | Container may run as root | High | PodSecurity |
-| KG-003 | Privilege escalation is not disabled | High | PodSecurity |
-| KG-004 | Pod shares a host namespace (`hostNetwork`, `hostPID`, `hostIPC`) | Critical | PodSecurity |
-| KG-005 | Pod mounts a `hostPath` volume | High | PodSecurity |
-| KG-006 | Container does not drop all Linux capabilities | Medium | PodSecurity |
 | KG-007 | Container has a writable root filesystem | Medium | PodSecurity |
-| KG-008 | Container sets no seccomp profile, or sets it to `Unconfined` | Medium | PodSecurity |
 | KG-010 | Namespace has no default-deny ingress NetworkPolicy | High | Network |
 | KG-011 | Namespace does not enforce a Pod Security Standard | High | Governance |
 | KG-012 | Default ServiceAccount automounts an API token | Medium | RBAC |
 | KG-013 | Namespaced Role grants a wildcard | High | RBAC |
 | KG-020 | Image uses a mutable tag or none at all | Medium | SupplyChain |
 | KG-021 | Container is missing resource requests or limits | Medium | Governance |
+
+`readOnlyRootFilesystem` is deliberately in the second table: it is common hardening
+advice but is not part of any Pod Security Standard level, so upstream does not check it.
+
+Image scanning adds two more, and only when trivy-operator is installed; see
+[Vulnerability scanning](#vulnerability-scanning). Their severity comes from the scan.
+
+| ID | Check | Severity | Category |
+|---|---|---|---|
 | TRIVY-VULN | Image carries known CVEs | varies | SupplyChain |
 | TRIVY-SECRET | Credential baked into an image layer | varies | SupplyChain |
 
 Checks apply to Deployments, StatefulSets, DaemonSets and CronJobs, and cover init
 containers as well as regular ones.
 
-The two `TRIVY-` checks only appear when trivy-operator is installed; see
-[Vulnerability scanning](#vulnerability-scanning). Their severity comes from the scan.
+Because both Pod Security Standard levels are evaluated, one `hostPath` volume is reported
+twice: KG-005 for violating `baseline`, and KG-037 for using a volume type `restricted`
+does not permit. That is two levels of the same standard rather than two opinions about
+the same rule, and a namespace that only targets `baseline` can accept KG-037 with a
+`ScanException`.
+
+Findings from the upstream evaluator carry a YAML snippet as their remediation rather than
+a `kubectl patch` command. The evaluator reports which control was violated, not the exact
+container index inside the pod template, so a patch path cannot be constructed reliably.
 
 There is deliberately no overall score. An earlier version had one and it was removed:
 it floored at zero, so most namespaces on a real cluster read `0` and the number stopped
@@ -283,11 +319,15 @@ make test
 This regenerates manifests, runs `go vet`, downloads the envtest control plane binaries
 if needed, and runs everything:
 
-- Table-driven unit tests for every check, run against in-memory namespace snapshots
-- Tests for scoring, ordering determinism, deduplication and severity filtering
+- Table-driven unit tests for every check written here, run against in-memory namespace
+  snapshots
+- Tests that the upstream Pod Security Standards evaluator is wired correctly: every
+  upstream check has a `KG-` mapping, each violation produces the expected identifier, and
+  every finding it emits carries a suggestion, a remediation and a reference
+- Tests for ordering determinism, deduplication and severity filtering
 - Integration tests against a real API server via envtest, which start the manager and
-  assert that creating a namespace produces a report, that an insecure workload produces
-  the expected findings, and that editing that workload changes the report
+  assert that asking for a scan produces findings, that an insecure workload produces
+  the expected identifiers, and that editing that workload changes the report
 - A test that applies the shipped demo manifests and asserts the findings they produce, so
   the documented walkthrough cannot silently rot
 - Table-driven tests for `ScanException` matching: check ID, namespace list, namespace

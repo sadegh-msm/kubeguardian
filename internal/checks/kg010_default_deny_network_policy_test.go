@@ -40,7 +40,7 @@ func TestDefaultDenyNetworkPolicy(t *testing.T) {
 	ingress := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
 
 	withWorkload := func(policies ...networkingv1.NetworkPolicy) *snapshot.Snapshot {
-		snap := snapshotOf(podSpec(secureContainer(testContainer)))
+		snap := snapshotOf(podSpec(secureContainer()))
 		snap.NetworkPolicies = policies
 		return snap
 	}

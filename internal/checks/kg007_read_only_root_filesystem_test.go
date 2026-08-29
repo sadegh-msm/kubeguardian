@@ -23,10 +23,10 @@ import (
 )
 
 func TestWritableRootFilesystem(t *testing.T) {
-	unset := secureContainer(testContainer)
+	unset := secureContainer()
 	unset.SecurityContext.ReadOnlyRootFilesystem = nil
 
-	writable := secureContainer(testContainer)
+	writable := secureContainer()
 	writable.SecurityContext.ReadOnlyRootFilesystem = ptr(false)
 
 	cases := []struct {
@@ -34,7 +34,7 @@ func TestWritableRootFilesystem(t *testing.T) {
 		spec corev1.PodSpec
 		want int
 	}{
-		{"read only root", podSpec(secureContainer(testContainer)), 0},
+		{"read only root", podSpec(secureContainer()), 0},
 		{"field unset", podSpec(unset), 1},
 		{"writable root", podSpec(writable), 1},
 	}

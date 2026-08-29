@@ -189,7 +189,7 @@ type Check interface {
 
 Purity is the point. Checks touch no client and no context, so their tests need no
 cluster, run in milliseconds, and cover edge cases that would be tedious to stage against
-a real API server. Check coverage is 98.6% as a result.
+a real API server.
 
 Shared metadata lives in an embedded `meta` struct, so each rule file contains only its
 logic and its remediation text, and no rule can accidentally emit a finding with a
@@ -198,8 +198,48 @@ mismatched severity or a missing reference.
 `snapshot.Collect` gathers every relevant object in the namespace in one pass using the
 manager's cache, and `Snapshot.Workloads()` flattens Deployments, StatefulSets, DaemonSets
 and CronJobs into a single `Workload` type holding a pod template. That flattening is why
-each pod-security rule is roughly fifteen lines and automatically covers four workload
-kinds and their init containers.
+a rule is roughly fifteen lines and automatically covers four workload kinds and their
+init containers.
+
+### What is written here and what is not
+
+There were fourteen rules here originally. Seven of them, covering privileged containers,
+running as root, privilege escalation, host namespaces, `hostPath` volumes, capabilities
+and seccomp, were a reimplementation of the Pod Security Standards. That is a
+specification Kubernetes publishes and revises, and reimplementing it means diverging from
+it silently at some future release, in a tool whose entire value is being right about what
+the cluster enforces.
+
+Those seven were deleted and replaced by `internal/sources/podsecurity`, which calls
+`k8s.io/pod-security-admission` — the same package the API server uses for Pod Security
+Admission. Three things follow from that:
+
+- Findings match what enforcement would actually do, which makes KG-011's advice
+  self-consistent: KubeGuardian tells a namespace to enforce a standard, and reports
+  exactly what enforcing it would reject.
+- Eight controls arrived for free that no hand-written rule had covered: host ports,
+  Windows HostProcess containers, `procMount`, AppArmor, SELinux options, sysctls, host
+  probes, and restricted volume types. They are KG-030 to KG-037.
+- The library is on the same release train as `k8s.io/api`, so tracking a Kubernetes minor
+  version updates the security logic as a side effect of an ordinary dependency bump.
+
+The seven rules that remain are the ones with no upstream owner: `readOnlyRootFilesystem`,
+which is common hardening advice but is not part of any Pod Security Standard level, and
+the six namespace and governance checks — NetworkPolicy, Pod Security Admission labels,
+default ServiceAccount tokens, wildcard RBAC, mutable image tags and resource limits.
+
+One constraint the library imposed is worth recording. `policy.CheckResult` carries
+`Allowed`, `ForbiddenReason` and `ForbiddenDetail`, but **not** the ID of the check that
+produced it, so evaluating all checks in one pass yields failures that cannot be
+attributed. `New()` therefore builds one `policy.Evaluator` per check and evaluates each
+separately. That is more evaluator objects than strictly necessary, and it is what makes
+the mapping from an upstream check to a `KG-` identifier possible at all.
+
+Both `baseline` and `restricted` are evaluated for every workload, because a report should
+describe posture rather than pass or fail against one chosen level. The visible
+consequence is that a `hostPath` volume produces two findings, KG-005 and KG-037. They are
+two levels of one standard rather than two tools disagreeing, and a namespace that only
+targets `baseline` can accept KG-037 with a `ScanException`.
 
 ## The Source seam
 
@@ -218,10 +258,12 @@ unpacks images, with registry credentials, real CPU, and a vulnerability databas
 Rather than grow this operator into an image scanner, a second source contributes findings
 into the same report. Every finding records which source produced it.
 
-That second source is now built. `internal/sources/trivy` reads the `VulnerabilityReport`
-and `ExposedSecretReport` resources that trivy-operator writes, and the seam needed no
-change to accommodate it, which is the useful evidence that it was drawn in the right
-place.
+Two more sources are now built, and neither required a change to the seam or to the
+controller, which is the useful evidence that it was drawn in the right place.
+
+`internal/sources/podsecurity` wraps the upstream Pod Security Standards evaluator.
+`internal/sources/trivy` reads the `VulnerabilityReport` and `ExposedSecretReport`
+resources that trivy-operator writes.
 
 Two decisions in that adapter are worth stating here because they are not obvious:
 
@@ -237,10 +279,11 @@ collapses to one finding per workload and image, listing only the CVEs that have
 version, since those are the ones actionable today. `--max-findings` caps the whole report
 as a second layer.
 
-`ConfigAuditReport` and `RbacAssessmentReport` are not consumed: KG-001 to KG-013 already
-cover that ground, and ingesting them would report the same privileged container twice.
-
-Nothing else in the codebase has an interface with a single implementer.
+`ConfigAuditReport` and `RbacAssessmentReport` are not consumed. The upstream Pod Security
+Standards evaluator and the remaining rules already cover that ground, and ingesting them
+would report the same privileged container a second time under an unrelated `KSV-`
+identifier, behind a hand-maintained mapping table that drifts as Aqua adds checks. Trivy
+stays for what only Trivy can do.
 
 ## Exceptions
 
@@ -338,6 +381,15 @@ reliable output matters more. These were cut on purpose.
   Falco can all emit to. One adapter against that standard would pick up every such tool
   through a single vendor-neutral interface, and would fit the existing `Source` seam. It
   is the natural next extension, left out because Trivy was the integration asked for.
+- **A policy engine of our own.** A `SecurityCheck` CRD holding CEL expressions would turn
+  new rules into YAML instead of Go, and platform teams could add their own. It is also
+  Kyverno rewritten badly: the security knowledge would stay ours to maintain, which is
+  the cost the pod-security-admission move was made to avoid.
+- **Kyverno or OPA Gatekeeper as the engine.** Both have large curated policy libraries and
+  both background-scan existing resources. Both are also an additional admission controller
+  and webhook on the platform, which is a large operational commitment for a reporting
+  tool. `k8s.io/pod-security-admission` delivers the pod-security half as a Go import, with
+  no new cluster dependency at all.
 - **Cross-namespace and cluster-scoped RBAC analysis.** ClusterRoleBindings that grant
   namespace access from outside are a real gap, and closing it properly needs a
   cluster-wide binding graph rather than a per-namespace snapshot. That is a different
@@ -352,7 +404,10 @@ reliable output matters more. These were cut on purpose.
 - KG-012 reports the default ServiceAccount when a workload uses it without disabling
   automounting. It cannot tell whether that workload actually calls the API, so this is
   a prompt to check rather than proof of a problem.
-- The excluded namespace list is exact-match, not a selector.
+- Findings from the upstream Pod Security Standards evaluator name the workload but leave
+  `resource.container` empty, because `policy.CheckResult` reports a violated control
+  rather than a path into the pod spec. The container name appears in the message instead,
+  and the remediation is a YAML snippet rather than a `kubectl patch` command.
 - Trivy detection happens once at startup, so installing trivy-operator after KubeGuardian
   requires an operator restart before its findings appear.
 - Trivy labels its reports with the workload it actually scanned, which for a Deployment is

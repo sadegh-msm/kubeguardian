@@ -40,6 +40,7 @@ import (
 	"github.com/sadegh-msm/kubeguardian/internal/controller"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
+	"github.com/sadegh-msm/kubeguardian/internal/sources/podsecurity"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/trivy"
 	// +kubebuilder:scaffold:imports
 )
@@ -201,7 +202,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	scanSources := []sources.Source{builtin.NewEngine()}
+	podSecuritySource, err := podsecurity.New()
+	if err != nil {
+		setupLog.Error(err, "Unable to initialise the Pod Security Standards source")
+		os.Exit(1)
+	}
+
+	scanSources := []sources.Source{builtin.NewEngine(), podSecuritySource}
 
 	trivyAdapter, err := trivy.NewAdapter(restConfig)
 	if err != nil {

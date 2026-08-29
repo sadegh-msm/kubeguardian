@@ -4,9 +4,9 @@ Three layers, each answering a different question.
 
 | Layer | Question | Mechanism | Result |
 |---|---|---|---|
-| Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 38 test functions, all pass |
-| Integration | Does the controller behave against a real API server? | envtest control plane, manager started | 6 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus the exception and Trivy rounds, all pass |
+| Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
+| Integration | Does the controller behave against a real API server? | envtest control plane, manager started | 8 specs, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus four later rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -30,17 +30,14 @@ controller ran as a Deployment in `kubeguardian-system` under its generated Clus
 ## Layer 1: unit tests
 
 Checks are pure functions from a namespace snapshot to findings, so they need no cluster.
-Coverage: `internal/checks` 98.6%, `internal/sources` 97.4%, `internal/exceptions` 87.5%,
-`internal/sources/trivy` 76.5%, `internal/controller` 77.4%.
+Coverage: `internal/checks` 98.3%, `internal/sources` 97.4%, `internal/exceptions` 87.5%,
+`internal/sources/podsecurity` 73.9%, `internal/sources/trivy` 76.5%,
+`internal/controller` 76.9%.
 
-Each rule has its own table-driven test covering the positive case, the compliant case,
-and the edge cases that matter for that rule. Examples of the edge cases covered:
+Each rule written here has its own table-driven test covering the positive case, the
+compliant case, and the edge cases that matter for that rule. Examples of the edge cases
+covered:
 
-- Pod-level security context inherited by a container that sets nothing (KG-002, KG-008)
-- A container overriding a compliant pod-level setting (KG-008)
-- `runAsUser: 0` distinguished from an unset `runAsNonRoot` (KG-002)
-- Lowercase `all` accepted as a capability drop (KG-006)
-- Capabilities dropped and then added back (KG-006)
 - Registry ports not mistaken for image tags: `registry:5000/app` is untagged, but
   `registry:5000/app:2.0` is tagged (KG-020)
 - Digest-pinned images treated as immutable (KG-020)
@@ -48,6 +45,22 @@ and the edge cases that matter for that rule. Examples of the edge cases covered
 - A namespace with no workloads not flagged for a missing NetworkPolicy (KG-010)
 - `audit` label present but `enforce` absent (KG-011)
 - One finding per Role even when several rules use wildcards (KG-013)
+
+The pod-security source is not tested by reimplementing the Pod Security Standards a
+second time in assertions; upstream tests its own logic. `internal/sources/podsecurity`
+tests the wiring, which is what can actually break here:
+
+- Every check `policy.DefaultChecks()` returns has a `KG-` mapping, so a Kubernetes bump
+  that adds a control fails the build rather than silently dropping its findings
+- A compliant pod produces no findings at all
+- Each violated control produces the expected identifier: privileged, root user, privilege
+  escalation, host namespaces, `hostPath`, capabilities, seccomp and host ports
+- Host namespaces collapse to a single finding, because upstream treats `hostNetwork`,
+  `hostPID` and `hostIPC` as one check rather than three
+- Init containers are evaluated, not only regular ones
+- Every finding carries a suggestion, a remediation, a reference, the `pod-security`
+  source and the `PodSecurity` category, so nothing arrives in a report unactionable
+- The rule table is well formed: no empty identifier, suggestion or remediation
 
 Ordering and aggregation are tested separately in `internal/sources`: severity ordering,
 stability across twenty repeated runs, deduplication, minimum-severity filtering, and
@@ -74,10 +87,10 @@ disabled-adapter path returning no findings and no error.
 |---|---|
 | does not create a report on its own | A new namespace produces no report over a `Consistently` window |
 | populates a report that the user creates | Creating the report in a namespace drives it to `ScanSucceeded=True` |
-| reports findings when an insecure workload is created | Expected finding IDs present, every finding has a suggestion, source is `builtin` |
+| reports findings when an insecure workload is created | Expected finding IDs present, every finding has a suggestion, source is `builtin` or `pod-security` |
 | rescans when an existing workload changes | Patching the Deployment removes KG-001 and lowers the critical count |
 | marks the scan as succeeded | `ScanSucceeded` condition is True |
-| flags the insecure namespace | The shipped demo manifest yields the documented IDs and exactly two KG-004 findings |
+| flags the insecure namespace | The shipped demo manifest yields the documented IDs, exactly one KG-004 finding, and a summary of 15 findings with 2 critical |
 | clears the findings once the hardened manifest is applied | Zero findings, KG-001/004/008/010/011/013 all absent |
 
 The last two apply the real files from `test/demo/`, so the documented walkthrough cannot
@@ -89,8 +102,10 @@ Every scenario below was executed against the deployed operator. Results are the
 observed output.
 
 These were run before scoring was removed, so the captured output still shows a `SCORE`
-column. The behaviour each scenario verifies is unchanged; only that column is gone. The
-second round below re-verifies the current build against the Hamravesh cluster.
+column, and before the Pod Security Standards checks moved to the upstream library, so
+`hostNetwork` and `hostPID` still appear as two KG-004 findings. The behaviour each
+scenario verifies is unchanged. Each later round re-verifies the current build, and the
+fifth round covers the pod-security migration specifically.
 
 ### Discovery and scoping
 
@@ -510,3 +525,210 @@ The namespaced model made three things unrepresentable rather than merely handle
 The spec is now empty. Its own test for a dangling namespace reference was deleted along
 with the state it tested, which is the right outcome: the bug class is designed out rather
 than covered.
+
+---
+
+# Fifth round: the Pod Security Standards move upstream
+
+Seven hand-written rules — KG-001, 002, 003, 004, 005, 006 and 008 — were deleted and
+replaced by `internal/sources/podsecurity`, which calls `k8s.io/pod-security-admission`.
+This round establishes that the replacement preserves behaviour and what changed visibly.
+
+## P1 — the upstream API forced one evaluator per check
+
+`policy.CheckResult` carries `Allowed`, `ForbiddenReason` and `ForbiddenDetail`, and no
+check ID. Evaluating all checks with a single evaluator therefore returns a list of
+failures with nothing to attribute them to, and every finding would have to be reported
+under one generic identifier.
+
+Enumerated at runtime, `policy.DefaultChecks()` returns nineteen checks:
+
+```
+allowPrivilegeEscalation  appArmorProfile          capabilities_baseline
+capabilities_restricted   hostNamespaces           hostPathVolumes
+hostPorts                 hostProbesAndHostLifecycle
+privileged                procMount                procMount_restricted
+restrictedVolumes         runAsNonRoot             runAsUser
+seccompProfile_baseline   seccompProfile_restricted
+seLinuxOptions            sysctls                  windowsHostProcess
+```
+
+`New()` builds one evaluator per check and keeps the ID alongside it, which is what makes
+the mapping to a `KG-` identifier possible. `TestEveryUpstreamCheckIsMapped` iterates the
+same list, so a Kubernetes bump that introduces a twentieth check fails the build instead
+of silently dropping its findings.
+
+## P2 — the demo namespace before and after
+
+Same manifest, `test/demo/01-insecure-namespace.yaml`, asserted by the envtest demo spec.
+
+| | Before | After |
+|---|---|---|
+| Total findings | 15 | 15 |
+| Critical | 3 | 2 |
+| KG-004 findings | 2 | 1 |
+| New identifiers | — | KG-037 |
+
+The critical count moved because upstream treats `hostNetwork`, `hostPID` and `hostIPC` as
+a single `hostNamespaces` check rather than one finding per flag. The count of distinct
+problems is unchanged; the pod shares host namespaces, which is one decision to reverse
+and now reads as one finding. KG-037 is new: the `hostPath` volume also violates the
+`restricted` volume-type allow-list, which no hand-written rule covered.
+
+The current pod-security findings for that Deployment, with the messages the upstream
+evaluator produces:
+
+```
+KG-001  Critical  baseline Pod Security Standard, privileged: container "api" must not
+                  set securityContext.privileged=true
+KG-004  Critical  baseline Pod Security Standard, host namespaces: hostNetwork=true,
+                  hostPID=true
+KG-002  High      restricted Pod Security Standard, runAsNonRoot != true: pod or
+                  container "api" must set securityContext.runAsNonRoot=true
+KG-003  High      restricted Pod Security Standard, allowPrivilegeEscalation != false:
+                  container "api" must set securityContext.allowPrivilegeEscalation=false
+KG-005  High      baseline Pod Security Standard, hostPath volumes: volume "host-root"
+KG-006  Medium    restricted Pod Security Standard, unrestricted capabilities: container
+                  "api" must set securityContext.capabilities.drop=["ALL"]
+KG-008  Medium    restricted Pod Security Standard, seccompProfile: pod or container "api"
+                  must set securityContext.seccompProfile.type to "RuntimeDefault" or
+                  "Localhost"
+KG-037  Medium    restricted Pod Security Standard, restricted volume types: volume
+                  "host-root" uses restricted volume type "hostPath"
+```
+
+Each message names the level that rejects it, which the hand-written messages did not.
+
+## P3 — the deduplication regression test was re-anchored
+
+The original evidence that deduplication does not collapse distinct findings was "one pod
+with `hostNetwork` and `hostPID` yields two KG-004 findings". Upstream makes that a single
+check, so that assertion no longer proves anything.
+
+The unit test in `internal/sources` that covers the dedup key directly — two findings
+sharing an ID and a resource but differing in message are both retained — is unchanged and
+still the real regression test. The envtest demo spec now asserts the opposite property,
+that KG-004 appears exactly once, so the collapse is pinned rather than assumed.
+
+## P4 — what the deletion exposed
+
+`make lint` failed after the seven rule files and their tests were removed, and both
+findings were consequences of the deletion rather than of the new code:
+
+```
+internal/checks/fixtures_test.go:64:22: secureContainer - name always receives
+    testContainer ("api") (unparam)
+internal/checks/fixtures_test.go:88:6: func findingIDs is unused (unused)
+```
+
+Every caller that passed a varying name to `secureContainer` lived in a deleted test file.
+The linter noticing is a reasonable signal that the deletion was complete rather than
+half-done. Seven helpers in `internal/checks/helpers.go` were orphaned the same way
+and removed — `workloadRef`, `effectiveRunAsNonRoot`, `effectiveRunAsUser`,
+`dropsAllCapabilities`, `addedCapabilities`, `effectiveSeccompProfile` and `podPatch` —
+along with the `referencePodSecurityStandards` constant in `check.go`, since the only
+rules that cited that document now live upstream.
+
+Final state: `make lint` reports 0 issues, and every suite passes.
+
+## P5 — the same cluster, before and after
+
+`v0.5.0` was built for `linux/amd64`, pushed to `docker.io/sadegh81/kubeguardian` and
+rolled out on the Hamravesh cluster `interview-mohammadi-c243`. The CRDs and RBAC applied
+unchanged; only the Deployment was reconfigured. Every report was rescanned within 90
+seconds of the new leader taking the lease.
+
+```
+                        before (v0.4.0)                 after (v0.5.0)
+NAMESPACE               CRIT HIGH MED SUPPRESSED        CRIT HIGH MED SUPPRESSED
+backup-system              0    1   0     0                0    1   0     0
+cilium-secrets             0    1   0     0                0    1   0     0
+default                    0    1   0     0                0    1   0     0
+hamlb-system               2   11  13     3                2   10  15     2
+kubeguardian-system        0    2   0     0                0    1   0     0
+lb-system                  0    1   0     0                0    1   0     0
+logging-system             4   23  29     0                4   15  22     0
+monitoring-system          9   29  37     2                9   17  31     1
+platform-system           10   15  28     0               13   13  28     0
+security-system            0   16  19     0                0   14  17     0
+trivy-system               0    3   2     0                0    3   2     0
+```
+
+**Exceptions still match, which is the point of the round.** The two `ScanException`
+objects were written against the old hand-written rules and were not touched:
+
+```
+hamlb-system       KG-001 DaemonSet/platform-system--hamlb-gateway  hamlb-gateway-host-access
+hamlb-system       KG-004 DaemonSet/platform-system--hamlb-gateway  hamlb-gateway-host-access
+monitoring-system  KG-004 DaemonSet/vm-stack-prometheus-node-exporter  node-exporter-host-access
+```
+
+Both accepted risks are still suppressed, on the same workloads, by the same exceptions.
+The suppressed counts fell from 3 to 2 and from 2 to 1 because each pod's `hostNetwork`
+and `hostPID` used to be suppressed as two findings and is now one.
+
+**High counts fell because findings are now per pod, not per container.** The upstream
+evaluator reports a violated control once for the pod and names every container that
+violates it:
+
+```
+KG-002  Deployment/vmagent-vmagent
+        restricted Pod Security Standard, runAsNonRoot != true: pod or containers
+        "config-init", "config-reloader", "vmagent" must set securityContext.runAsNonRoot=true
+```
+
+Three containers, one finding, one fix. The hand-written rule emitted three. No workload
+stopped being reported; the same problems are stated more compactly.
+
+**The newly covered controls found real problems immediately.** Neither has any
+hand-written equivalent:
+
+```
+KG-030  DaemonSet/node-metrics-exporter
+        baseline Pod Security Standard, hostPort: container "node-metrics-exporter"
+        uses hostPort 9800
+KG-037  DaemonSet/vm-stack-prometheus-node-exporter
+        restricted Pod Security Standard, restricted volume types: volumes "proc",
+        "sys", "root" use restricted volume type "hostPath"
+```
+
+`monitoring-system` also shows the expected KG-005 and KG-037 overlap: two `hostPath`
+findings at `baseline` and two restricted-volume findings for the same volumes.
+
+**Two count changes are not this migration, and both resolved themselves.**
+`platform-system` went from 10 critical to 13, then to 12 one rescan later. All of them
+are `TRIVY-VULN`, and no workload in that namespace is privileged or shares a host
+namespace, so the movement is trivy-operator's own rescan cadence rather than anything
+this change did.
+
+`kubeguardian-system` briefly dropped from two high findings to one, then returned to two.
+The rollout changed the operator's own image, so trivy-operator had to scan `v0.5.0` from
+scratch, and the first report after the rollout was written before that scan existed. The
+next rescan picked it up. This is the startup-detection and rescan behaviour documented
+under Known limitations, observed rather than assumed.
+
+**The operator's own namespace reports no pod-security finding at all.** Its two findings
+are KG-010, no default-deny NetworkPolicy, and a `TRIVY-VULN` for CVEs in its own image.
+It passes the `restricted` Pod Security Standard under the upstream evaluator, which is a
+stronger statement than passing the rules this project used to write itself.
+
+## P6 — rebuilding when `gcr.io` is unreachable
+
+`gcr.io` times out from this network, so `docker buildx build` failed while resolving
+metadata for the `gcr.io/distroless/static:nonroot` runtime base. `mirror.gcr.io`,
+`quay.io`, `cgr.dev` and `registry.access.redhat.com` all return 403 or time out as well;
+only Docker Hub is reachable.
+
+Rather than substitute a different base and change what is actually shipped, the exact
+base was recovered from the `v0.4.0` image already in the local image store: `docker save`,
+drop the single top layer that contains `/manager` from `manifest.json` and from the
+config's `rootfs.diff_ids` and `history`, `docker load` the remainder under the original
+name. That yields a 2.23 MB image, matching distroless static, so `v0.5.0` and `v0.4.0`
+share byte-identical base layers and the only difference between them is the binary.
+
+`make docker-build` with `BASE_IMAGE=alpine:3.22`, documented in the README, remains the
+option for anyone who does not already have the base on disk. It is not what was pushed.
+
+The push itself needed the usual retries — one layer retried for about a minute before
+completing — and was verified with `docker buildx imagetools inspect` rather than trusting
+the push output, since `make docker-buildx` ignores buildx failures by design.

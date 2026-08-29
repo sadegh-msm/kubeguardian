@@ -23,9 +23,10 @@ already exists contribute findings through the `sources.Source` interface.
 | `VulnerabilityReport` | `TRIVY-VULN` | CVEs in image layers, which the built-in engine cannot see |
 | `ExposedSecretReport` | `TRIVY-SECRET` | Credentials baked into images |
 
-`ConfigAuditReport` and `RbacAssessmentReport` are deliberately **not** consumed. KG-001
-to KG-013 already cover that ground, and ingesting them would report the same privileged
-container twice under two different IDs.
+`ConfigAuditReport` and `RbacAssessmentReport` are deliberately **not** consumed. The
+upstream Pod Security Standards evaluator in `internal/sources/podsecurity` and the rules
+in `internal/checks` already cover that ground, and ingesting them would report the same
+privileged container twice under two different IDs.
 
 ## Aggregation
 

@@ -50,7 +50,7 @@ func TestWildcardRBAC(t *testing.T) {
 	}
 
 	build := func(roles ...rbacv1.Role) *snapshot.Snapshot {
-		snap := snapshotOf(podSpec(secureContainer(testContainer)))
+		snap := snapshotOf(podSpec(secureContainer()))
 		snap.Roles = roles
 		return snap
 	}

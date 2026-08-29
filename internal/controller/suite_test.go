@@ -38,6 +38,7 @@ import (
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
+	"github.com/sadegh-msm/kubeguardian/internal/sources/podsecurity"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -94,10 +95,13 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	podSecurity, err := podsecurity.New()
+	Expect(err).NotTo(HaveOccurred())
+
 	err = (&NamespaceSecurityReportReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
-		Sources:        []sources.Source{builtin.NewEngine()},
+		Sources:        []sources.Source{builtin.NewEngine(), podSecurity},
 		RescanInterval: time.Hour,
 		MinSeverity:    securityv1alpha1.SeverityLow,
 		MaxFindings:    200,

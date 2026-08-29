@@ -22,8 +22,7 @@ import (
 )
 
 const (
-	referencePodSecurityStandards = "https://kubernetes.io/docs/concepts/security/pod-security-standards/"
-	referenceSecurityContext      = "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/"
+	referenceSecurityContext = "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/"
 )
 
 type Check interface {
@@ -67,14 +66,7 @@ func (m meta) finding(ref securityv1alpha1.ResourceRef, message, suggestion, rem
 
 func All() []Check {
 	return []Check{
-		newPrivilegedContainer(),
-		newRunAsNonRoot(),
-		newAllowPrivilegeEscalation(),
-		newHostNamespaces(),
-		newHostPathVolume(),
-		newCapabilitiesNotDropped(),
 		newWritableRootFilesystem(),
-		newSeccompProfile(),
 		newDefaultDenyNetworkPolicy(),
 		newPodSecurityAdmissionLabels(),
 		newDefaultServiceAccountToken(),

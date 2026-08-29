@@ -80,6 +80,7 @@ var _ = Describe("Demo manifests", Ordered, func() {
 			ContainElement("KG-011"),
 			ContainElement("KG-013"),
 			ContainElement("KG-008"),
+			ContainElement("KG-037"),
 			ContainElement("KG-020"),
 			ContainElement("KG-021"),
 		))
@@ -93,8 +94,9 @@ var _ = Describe("Demo manifests", Ordered, func() {
 				hostNamespaceFindings++
 			}
 		}
-		Expect(hostNamespaceFindings).To(Equal(2))
-		Expect(report.Status.Summary.Total).To(BeNumerically(">=", 15))
+		Expect(hostNamespaceFindings).To(Equal(1))
+		Expect(report.Status.Summary.Total).To(Equal(15))
+		Expect(report.Status.Summary.Critical).To(Equal(2))
 	})
 
 	It("clears the findings once the hardened manifest is applied", func() {

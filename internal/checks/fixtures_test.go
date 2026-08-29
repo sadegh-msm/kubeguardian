@@ -61,9 +61,9 @@ func podSpec(containers ...corev1.Container) corev1.PodSpec {
 	return corev1.PodSpec{Containers: containers}
 }
 
-func secureContainer(name string) corev1.Container {
+func secureContainer() corev1.Container {
 	return corev1.Container{
-		Name:  name,
+		Name:  testContainer,
 		Image: "registry.example.com/app:1.4.2",
 		SecurityContext: &corev1.SecurityContext{
 			Privileged:               ptr(false),
@@ -83,14 +83,6 @@ func secureContainer(name string) corev1.Container {
 			},
 		},
 	}
-}
-
-func findingIDs(findings []securityv1alpha1.Finding) []string {
-	ids := make([]string, 0, len(findings))
-	for _, finding := range findings {
-		ids = append(ids, finding.ID)
-	}
-	return ids
 }
 
 func containerNames(findings []securityv1alpha1.Finding) []string {
