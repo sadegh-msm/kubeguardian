@@ -800,12 +800,19 @@ deterministic, which is all the determinism test and the status-write comparison
 `v0.5.1` rolled out on the Hamravesh cluster. Every report was rescanned, the findings and
 both suppressions are unchanged from `v0.5.0`, and the log shows no errors.
 
-Memory was 26 Mi before and 28 Mi after, which is noise. The
-`cache.TransformStripManagedFields()` added in this round strips `managedFields` from every
-cached object, and its benefit is proportional to how many objects the cluster-wide cache
-holds. This cluster has 36 Deployments and 102 ServiceAccounts across 14 namespaces, so
-there is nothing to see at this size. It is kept because the cache is cluster-wide by
-necessity and a KaaS cluster is not this small.
+Resident memory was 26 Mi on `v0.5.0` and settles at 17 Mi on `v0.5.1`, sampled three
+times over two minutes with the pod fifteen minutes old in both cases. It reads 28 Mi in
+the first minute after start, before the cache has finished filling and the first GC has
+run, so the number is only meaningful once it settles.
+
+`cache.TransformStripManagedFields()`, added in this round, strips the `managedFields`
+bookkeeping from every object the cluster-wide cache holds — 36 Deployments, 102
+ServiceAccounts, 31 Roles and the rest across 14 namespaces here. The saving is
+proportional to how many objects are cached, so it is worth more on a KaaS cluster than on
+this one. Attributing all 9 Mi to it would be too strong a claim with one sample per
+version, but the direction is consistent and the change carries no behavioural risk: the
+transform runs on the way into the cache, and nothing here uses server-side apply from a
+cached object.
 
 The Trivy critical counts moved again during the round — `monitoring-system` 9 to 10,
 `platform-system` 12 to 14 — which is trivy-operator rescanning on its own cadence, the
