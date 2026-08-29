@@ -212,29 +212,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	scanSources := []sources.Source{builtin.NewEngine(), podSecuritySource}
-
 	trivyAdapter, err := trivy.NewAdapter(restConfig)
 	if err != nil {
 		setupLog.Error(err, "Unable to initialise the Trivy source")
 		os.Exit(1)
 	}
 	if trivyAdapter.Enabled() {
-		scanSources = append(scanSources, trivyAdapter)
 		setupLog.Info("Trivy integration enabled")
 	} else {
 		setupLog.Info("Trivy integration disabled, aquasecurity.github.io reports not found in this cluster")
 	}
 
-	if err := (&controller.NamespaceSecurityReportReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		Sources:        scanSources,
-		RescanInterval: rescanInterval,
-		MinSeverity:    severity,
-		MaxFindings:    maxFindings,
+	if err := (&controller.ManifestSecurityReportReconciler{
+		Scanner: controller.Scanner{
+			Client:         mgr.GetClient(),
+			Sources:        []sources.Source{builtin.NewEngine(), podSecuritySource},
+			RescanInterval: rescanInterval,
+			MinSeverity:    severity,
+			MaxFindings:    maxFindings,
+		},
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "namespacesecurityreport")
+		setupLog.Error(err, "Failed to create controller", "controller", "manifestsecurityreport")
+		os.Exit(1)
+	}
+
+	if err := (&controller.ImageSecurityReportReconciler{
+		Scanner: controller.Scanner{
+			Client:         mgr.GetClient(),
+			Sources:        []sources.Source{trivyAdapter},
+			RescanInterval: rescanInterval,
+			MinSeverity:    severity,
+			MaxFindings:    maxFindings,
+		},
+		Scheme:           mgr.GetScheme(),
+		ScannerAvailable: trivyAdapter.Enabled(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "imagesecurityreport")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

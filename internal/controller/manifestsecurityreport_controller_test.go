@@ -62,23 +62,31 @@ func insecureDeployment(namespace string) *appsv1.Deployment {
 	}
 }
 
-func reportFor(namespace string) func() (*securityv1alpha1.NamespaceSecurityReport, error) {
-	return func() (*securityv1alpha1.NamespaceSecurityReport, error) {
-		report := &securityv1alpha1.NamespaceSecurityReport{}
+func reportFor(namespace string) func() (*securityv1alpha1.ManifestSecurityReport, error) {
+	return func() (*securityv1alpha1.ManifestSecurityReport, error) {
+		report := &securityv1alpha1.ManifestSecurityReport{}
 		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: namespace}, report)
 		return report, err
 	}
 }
 
-func findingIDs(report *securityv1alpha1.NamespaceSecurityReport) []string {
-	ids := make([]string, 0, len(report.Status.Findings))
-	for _, finding := range report.Status.Findings {
+func imageReportFor(namespace string) func() (*securityv1alpha1.ImageSecurityReport, error) {
+	return func() (*securityv1alpha1.ImageSecurityReport, error) {
+		report := &securityv1alpha1.ImageSecurityReport{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: namespace}, report)
+		return report, err
+	}
+}
+
+func findingIDs(status *securityv1alpha1.ReportStatus) []string {
+	ids := make([]string, 0, len(status.Findings))
+	for _, finding := range status.Findings {
 		ids = append(ids, finding.ID)
 	}
 	return ids
 }
 
-var _ = Describe("NamespaceSecurityReport controller", func() {
+var _ = Describe("ManifestSecurityReport controller", func() {
 	var namespaceName string
 
 	BeforeEach(func() {
@@ -89,7 +97,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 	})
 
 	requestReport := func() {
-		Expect(k8sClient.Create(ctx, &securityv1alpha1.NamespaceSecurityReport{
+		Expect(k8sClient.Create(ctx, &securityv1alpha1.ManifestSecurityReport{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespaceName, Name: namespaceName},
 		})).To(Succeed())
 	}
@@ -129,7 +137,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 			if err != nil {
 				return nil
 			}
-			return findingIDs(report)
+			return findingIDs(&report.Status)
 		}, timeout, interval).Should(And(
 			ContainElement("KG-001"),
 			ContainElement("KG-004"),
@@ -158,7 +166,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 			if err != nil {
 				return nil
 			}
-			return findingIDs(report)
+			return findingIDs(&report.Status)
 		}, timeout, interval).Should(ContainElement("KG-001"))
 
 		before, err := reportFor(namespaceName)()
@@ -174,7 +182,7 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 			if err != nil {
 				return nil
 			}
-			return findingIDs(report)
+			return findingIDs(&report.Status)
 		}, timeout, interval).ShouldNot(ContainElement("KG-001"))
 
 		after, err := reportFor(namespaceName)()
@@ -192,13 +200,13 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 			if err != nil {
 				return nil
 			}
-			return findingIDs(report)
+			return findingIDs(&report.Status)
 		}, timeout, interval).Should(ContainElement("KG-001"))
 
 		before, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
 		previousScan := before.Status.LastScanTime
-		previousFindings := findingIDs(before)
+		previousFindings := findingIDs(&before.Status)
 
 		time.Sleep(1100 * time.Millisecond)
 
@@ -216,7 +224,32 @@ var _ = Describe("NamespaceSecurityReport controller", func() {
 
 		after, err := reportFor(namespaceName)()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(findingIDs(after)).To(Equal(previousFindings))
+		Expect(findingIDs(&after.Status)).To(Equal(previousFindings))
+	})
+
+	It("carries only manifest findings, and asking for it does not create an image report", func() {
+		requestReport()
+		Expect(k8sClient.Create(ctx, insecureDeployment(namespaceName))).To(Succeed())
+
+		Eventually(func() []string {
+			report, err := reportFor(namespaceName)()
+			if err != nil {
+				return nil
+			}
+			return findingIDs(&report.Status)
+		}, timeout, interval).Should(ContainElement("KG-001"))
+
+		report, err := reportFor(namespaceName)()
+		Expect(err).NotTo(HaveOccurred())
+		for _, finding := range report.Status.Findings {
+			Expect(finding.ID).To(HavePrefix("KG-"))
+			Expect(finding.Source).NotTo(Equal("trivy"))
+		}
+
+		Consistently(func() error {
+			_, err := imageReportFor(namespaceName)()
+			return err
+		}, 3*time.Second, 500*time.Millisecond).ShouldNot(Succeed())
 	})
 
 	It("marks the scan as succeeded", func() {

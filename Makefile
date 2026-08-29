@@ -132,13 +132,13 @@ endif
 demo: ## Apply the insecure demo namespace and show the resulting report.
 	$(KUBECTL) apply -f test/demo/01-insecure-namespace.yaml
 	@sleep 5
-	$(KUBECTL) get namespacesecurityreports kubeguardian-demo
+	$(KUBECTL) get msr,isr -n kubeguardian-demo
 
 .PHONY: demo-harden
 demo-harden: ## Harden the demo namespace and show the improved report.
 	$(KUBECTL) apply -f test/demo/02-hardened-namespace.yaml
 	@sleep 5
-	$(KUBECTL) get namespacesecurityreports kubeguardian-demo
+	$(KUBECTL) get msr,isr -n kubeguardian-demo
 
 .PHONY: demo-clean
 demo-clean: ## Remove the demo namespace.

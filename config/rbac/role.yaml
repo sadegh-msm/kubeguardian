@@ -62,7 +62,8 @@ rules:
 - apiGroups:
   - security.kubeguardian.io
   resources:
-  - namespacesecurityreports
+  - imagesecurityreports
+  - manifestsecurityreports
   verbs:
   - create
   - delete
@@ -74,13 +75,15 @@ rules:
 - apiGroups:
   - security.kubeguardian.io
   resources:
-  - namespacesecurityreports/finalizers
+  - imagesecurityreports/finalizers
+  - manifestsecurityreports/finalizers
   verbs:
   - update
 - apiGroups:
   - security.kubeguardian.io
   resources:
-  - namespacesecurityreports/status
+  - imagesecurityreports/status
+  - manifestsecurityreports/status
   verbs:
   - get
   - patch

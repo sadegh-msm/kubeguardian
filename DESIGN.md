@@ -15,10 +15,13 @@ publish findings with actionable suggestions as a Kubernetes resource.
 
 What is built:
 
-- A cluster-scoped `NamespaceSecurityReport` CRD, one per namespace
-- A controller that watches namespaces and the workloads inside them
-- Fourteen checks across pod security, network, RBAC, supply chain and governance
-- A `Source` seam with two implementations: the built-in engine and a Trivy adapter
+- Two namespaced report CRDs, `ManifestSecurityReport` and `ImageSecurityReport`, so the
+  two questions can be asked and answered separately
+- A controller per kind, watching the workloads each one actually reads
+- Seven hand-written checks across network, RBAC, supply chain and governance, plus the
+  upstream Pod Security Standards evaluator
+- A `Source` seam with three implementations: the built-in engine, the Pod Security
+  Standards evaluator and a Trivy adapter
 - A `ScanException` CRD for recording accepted risks without hiding them
 - Unit tests per check, and integration tests against a real API server via envtest
 
@@ -30,7 +33,7 @@ The requirement is that results are observable as a Kubernetes resource. That co
 logs, Prometheus metrics, Events, a ConfigMap, or a custom resource. A CRD is the right
 answer here for reasons the alternatives fail on:
 
-- It is queryable the way operators expect. `kubectl get nsr`, label selectors, RBAC on
+- It is queryable the way operators expect. `kubectl get msr`, label selectors, RBAC on
   the resource, and printer columns all work with no extra code.
 - It has a schema. Severity and category are enum-validated by the API server, so a
   malformed finding is rejected at admission rather than discovered by a consumer.
@@ -44,13 +47,50 @@ is real work for little gain when the report already holds the same information.
 
 ## Report shape and who creates it
 
-The report is **namespaced**, and it audits the namespace it lives in. There is no
+A report is **namespaced**, and it audits the namespace it lives in. There is no
 `spec.namespaceRef`; `metadata.namespace` is the target. The spec is empty.
 
 **The user creates it; the operator never does.** An earlier version reconciled namespaces
 and created a report for each one, which meant every new namespace silently acquired an
 object nobody asked for. Scanning is now opt-in: the report *is* the request, and its
 status is the answer.
+
+### Two kinds, not one
+
+There are two report kinds rather than one, and no field to filter sources within a single
+kind:
+
+| Kind | Sources | Findings |
+|---|---|---|
+| `ManifestSecurityReport` | `builtin`, `pod-security` | `KG-*` |
+| `ImageSecurityReport` | `trivy` | `TRIVY-*` |
+
+They were one object until v0.6.0. Splitting them is not tidiness; a `spec.sources` filter
+on one kind would have given the same selectivity and it would have been wrong for three
+reasons.
+
+**Status is the whole product of this operator, and one status cannot describe two
+scans.** A manifest scan reruns the instant a workload is edited. An image scan changes
+only when trivy-operator writes a new report, which is its own cadence entirely. Sharing a
+`lastScanTime` between them means the field describes neither: a fresh timestamp would say
+the image data is current when it might be an hour old. Two objects, two timestamps, two
+`ScanSucceeded` conditions, each true of exactly one thing.
+
+**A missing scanner becomes expressible.** With one kind, a cluster without trivy-operator
+produced a report containing no image findings, which is indistinguishable from a report
+whose images are clean. `ImageSecurityReport` reports `ScanSucceeded=False` with reason
+`ScannerUnavailable` instead. That statement had nowhere to live before.
+
+**The watches differ, and a filter field could not act on that.** A NetworkPolicy, Role or
+ServiceAccount change cannot affect what is inside an image, so the image controller does
+not watch them. A `spec.sources` filter would still have woken one controller for every
+event either half cared about and then discarded the work. Two controllers means each one
+subscribes to exactly what it reads.
+
+The cost is the obvious one: a namespace that wants both answers holds two objects, and
+`kubectl get msr,isr` is a longer command than `kubectl get nsr`. The two kinds share a
+`ReportStatus` type in the API package and a `Scanner` in the controller package, so the
+duplication is in the object model where it is meaningful, not in the code.
 
 ### Why namespaced rather than cluster-scoped
 
@@ -63,8 +103,8 @@ the authorizer either allows the whole collection or denies it. For a cluster-sc
 a tenant confined to one namespace therefore gets:
 
 ```
-kubectl get nsr payments     # works, via resourceNames
-kubectl get nsr              # Forbidden
+kubectl get msr payments     # works, via resourceNames
+kubectl get msr              # Forbidden
 ```
 
 They cannot discover or watch their own report, and no dashboard or controller that lists
@@ -90,7 +130,7 @@ Four things fall out for free:
   subjects. Following that keeps the door open for a `ClusterSecurityReport` later without
   overloading this one.
 
-The only thing given up is the single-command fleet view, and `kubectl get nsr -A` recovers
+The only thing given up is the single-command fleet view, and `kubectl get msr -A` recovers
 it. Genuinely cluster-level findings — ClusterRoleBinding analysis, node configuration —
 want their own kind rather than a cluster-scoped per-namespace one.
 
@@ -100,41 +140,57 @@ nothing is worse than no flag.
 
 ## Reconcile flow
 
+Both controllers run the same pipeline over the same snapshot. They differ in what they
+watch and in which sources they hand to it.
+
 ```
-NamespaceSecurityReport ─┐   created by the user, never by the operator
-Namespace                │
-Deployment               │
-StatefulSet              │
-DaemonSet                ├─► reports in that namespace ─► Reconcile(report)
-CronJob                  │                                       │
-NetworkPolicy            │                             snapshot.Collect
-Role                     │                                       │
-ServiceAccount           │                        Source.Collect for each source
-ScanException           ─┘                         ├─ builtin.Engine
-                                                   └─ trivy.Adapter (when installed)
-                                                                 │
-                                                         sources.Normalize
-                                                                 │
-                                                exceptions.Apply, mark suppressed
-                                                                 │
-                                            sources.Truncate, sources.Summarize
-                                                                 │
-                                                     update report .status
+ManifestSecurityReport ─┐  created by the user, never by the operator
+Namespace               │
+Deployment              │
+StatefulSet             ├─► manifest reports in that namespace ─┐
+DaemonSet               │                                       │
+CronJob                 │                                       │
+NetworkPolicy           │                                       │
+Role                    │                                       │
+ServiceAccount          │                                       │
+ScanException          ─┘                                       │
+                                                                ▼
+ImageSecurityReport    ─┐                                  Scanner.reconcile
+Namespace               │                                       │
+Deployment              │                             snapshot.Collect
+StatefulSet             ├─► image reports in that namespace ────┤
+DaemonSet               │                        Source.Collect for each source
+CronJob                 │              manifest: builtin.Engine, podsecurity.Source
+ScanException          ─┘              image:    trivy.Adapter
+                                                                │
+                                                        sources.Normalize
+                                                                │
+                                               exceptions.Apply, mark suppressed
+                                                                │
+                                           sources.Truncate, sources.Summarize
+                                                                │
+                                                    update report .status
 ```
 
 Reconcile is keyed on the report, never on an individual workload. Any event in the target
 namespace collapses to the same work item, so a rollout touching twenty objects produces
 one scan rather than twenty.
 
-The `For` watch carries `GenerationChangedPredicate`, which is what stops the controller
+The `For` watch carries `GenerationChangedPredicate`, which is what stops each controller
 spinning on its own status writes: a status update does not change generation.
+
+`Scanner` in `internal/controller/scan.go` holds everything the two do identically, and a
+small `report` interface — `client.Object` plus `ReportStatus() *ReportStatus` — is what
+lets one status writer serve both kinds. The interface is declared in the controller
+package rather than the API package so the API types keep importing nothing but
+apimachinery.
 
 ## Reacting to workload changes
 
 This is the requirement most likely to be implemented badly, so it is worth being
 explicit about the mechanism.
 
-`For(&NamespaceSecurityReport{})` alone would only reconcile when a report changed. Workload
+`For(&ManifestSecurityReport{})` alone would only reconcile when a report changed. Workload
 events reach the right reports by listing the reports in the workload's own namespace:
 given a Deployment in `payments`, the map function enqueues every report in `payments`. An
 object in a namespace nobody asked to audit maps to zero requests and costs nothing.
@@ -148,8 +204,16 @@ Generation only changes when the spec changes, which is exactly the trigger the
 requirement asks for. NetworkPolicy, Role and ServiceAccount watches do not use the
 predicate because those objects carry no status and every update to them is meaningful.
 
+The image controller watches a strict subset: the four workload kinds, the namespace and
+`ScanException`. Changing an image is a spec change, so the generation moves and the image
+report rescans immediately, which is the fast path that matters. It does not watch
+NetworkPolicy, Role or ServiceAccount, because none of them can change what is inside an
+image.
+
 A `RequeueAfter` of `--rescan-interval` backs the watches up, so posture drift is caught
-even in a namespace that produces no events at all.
+even in a namespace that produces no events at all. For the image report this is the main
+path rather than a backstop: Trivy's own reports cannot be watched, because the adapter
+reads them with an uncached client precisely so the optional CRDs need not exist.
 
 ## The unit of work is the namespace, not the workload
 
@@ -472,7 +536,13 @@ reliable output matters more. These were cut on purpose.
   rather than a path into the pod spec. The container name appears in the message instead,
   and the remediation is a YAML snippet rather than a `kubectl patch` command.
 - Trivy detection happens once at startup, so installing trivy-operator after KubeGuardian
-  requires an operator restart before its findings appear.
+  requires an operator restart before its findings appear. Until then every
+  `ImageSecurityReport` reports `ScannerUnavailable`, which is at least visible rather than
+  silent.
+- New Trivy scan data reaches an `ImageSecurityReport` within one `--rescan-interval`
+  rather than immediately. `VulnerabilityReport` and `ExposedSecretReport` cannot be
+  watched without putting them in the manager cache, which would require the CRDs to exist
+  and is exactly what the uncached reader avoids.
 - Trivy labels its reports with the workload it actually scanned, which for a Deployment is
   the active ReplicaSet. Trivy findings therefore name a ReplicaSet where built-in findings
   name the Deployment.

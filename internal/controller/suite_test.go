@@ -98,13 +98,27 @@ var _ = BeforeSuite(func() {
 	podSecurity, err := podsecurity.New()
 	Expect(err).NotTo(HaveOccurred())
 
-	err = (&NamespaceSecurityReportReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		Sources:        []sources.Source{builtin.NewEngine(), podSecurity},
-		RescanInterval: time.Hour,
-		MinSeverity:    securityv1alpha1.SeverityLow,
-		MaxFindings:    200,
+	err = (&ManifestSecurityReportReconciler{
+		Scanner: Scanner{
+			Client:         mgr.GetClient(),
+			Sources:        []sources.Source{builtin.NewEngine(), podSecurity},
+			RescanInterval: time.Hour,
+			MinSeverity:    securityv1alpha1.SeverityLow,
+			MaxFindings:    200,
+		},
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = (&ImageSecurityReportReconciler{
+		Scanner: Scanner{
+			Client:         mgr.GetClient(),
+			RescanInterval: time.Hour,
+			MinSeverity:    securityv1alpha1.SeverityLow,
+			MaxFindings:    200,
+		},
+		Scheme:           mgr.GetScheme(),
+		ScannerAvailable: false,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

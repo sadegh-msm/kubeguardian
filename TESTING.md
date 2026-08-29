@@ -5,8 +5,8 @@ Three layers, each answering a different question.
 | Layer | Question | Mechanism | Result |
 |---|---|---|---|
 | Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
-| Integration | Does the controller behave against a real API server? | envtest control plane, manager started | 8 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus four later rounds, all pass |
+| Integration | Do the controllers behave against a real API server? | envtest control plane, both managers started | 12 specs, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus six later rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -817,3 +817,116 @@ cached object.
 The Trivy critical counts moved again during the round — `monitoring-system` 9 to 10,
 `platform-system` 12 to 14 — which is trivy-operator rescanning on its own cadence, the
 same drift recorded in P5.
+
+---
+
+# Seventh round: one report becomes two
+
+`NamespaceSecurityReport` was replaced by `ManifestSecurityReport` (`msr`) and
+`ImageSecurityReport` (`isr`). Each is namespaced, each has its own status, and you create
+whichever you want.
+
+## R1 — envtest coverage of the split
+
+| Spec | Asserts |
+|---|---|
+| manifest report does not create itself | A new namespace produces no `msr` over a `Consistently` window |
+| manifest report carries only manifest findings | Every finding starts `KG-`, no finding has source `trivy`, and asking for an `msr` brings no `isr` into being |
+| image report does not create itself | Same, for `isr` |
+| image report says so when no scanner is installed | `ScanSucceeded=False`, reason `ScannerUnavailable`, findings empty, `lastScanTime` still set |
+| image report ignores manifests | An insecure Deployment produces no `isr` finding at all over a `Consistently` window |
+
+The envtest suite runs with no image scanner, which makes the `ScannerUnavailable` path the
+default there rather than an awkward case to stage. `lastScanTime` is deliberately still
+written on that path: the report is current, it just has nothing to report.
+
+## R2 — the migration on the live cluster
+
+`v0.6.0` deployed to the Hamravesh cluster. The two new CRDs applied cleanly alongside the
+old one, so `make deploy` succeeded before anything was deleted:
+
+```
+customresourcedefinition.../imagesecurityreports.security.kubeguardian.io created
+customresourcedefinition.../manifestsecurityreports.security.kubeguardian.io created
+deployment.apps/kubeguardian-controller-manager configured
+```
+
+The old CRD was then deleted, taking the eleven reports with it, along with the three
+`namespacesecurityreport-*` helper ClusterRoles that kustomize leaves behind because
+nothing prunes them. `~/.kube/cache/discovery` was cleared, as after the v0.4.0 scope
+change, and the new kinds resolve:
+
+```
+NAME                      SHORTNAMES   NAMESPACED   KIND
+imagesecurityreports      isr          true         ImageSecurityReport
+manifestsecurityreports   msr          true         ManifestSecurityReport
+scanexceptions            scanexc      false        ScanException
+```
+
+## R3 — the split adds up
+
+Reports were recreated as both kinds in all eleven namespaces. Every finding moved to
+exactly one of them and none went missing:
+
+```
+                     before (v0.5.1)          msr (v0.6.0)         isr (v0.6.0)
+NAMESPACE            CRIT HIGH MED SUPP       CRIT HIGH MED SUPP   CRIT HIGH MED
+backup-system           0    1   0    0          0    1   0    0      0    0   0
+cilium-secrets          0    1   0    0          0    1   0    0      0    0   0
+default                 0    1   0    0          0    1   0    0      0    0   0
+hamlb-system            2   10  15    2          0   10  15    2      2    0   0
+kubeguardian-system     0    2   0    0          0    1   0    0      0    0   0
+lb-system               0    1   0    0          0    1   0    0      0    0   0
+logging-system          4   15  22    0          0   14  22    0      4    1   0
+monitoring-system      10   17  31    1          0   17  31    1     10    0   0
+platform-system        19   13  28    0          0   13  28    0     18    0   0
+security-system         0   14  17    0          0   14  17    0      0    0   0
+trivy-system            0    3   2    0          0    3   2    0      0    0   0
+```
+
+Every row adds up. `hamlb-system` 2+10+15 becomes 0+10+15 on the manifest side and 2+0+0 on
+the image side. `logging-system`'s one high was a `TRIVY-VULN` and moved with it, leaving
+14 manifest highs. `platform-system` reads 18 rather than 19 for the familiar reason:
+trivy-operator rescans on its own cadence. `kubeguardian-system` again lost its image
+finding to the image change, and picks it up on the next Trivy scan.
+
+Critical counts on the manifest side are now `0` everywhere on this cluster, and that is
+information rather than a gap: every `KG-` critical here is either suppressed by an
+exception or does not exist. All the criticals were CVEs.
+
+**Each kind carries only its own findings.**
+
+```
+$ kubectl get msr posture -n monitoring-system -o json | ...
+Counter({'pod-security': 30, 'builtin': 19})
+['KG-002', 'KG-003', 'KG-004', 'KG-005', 'KG-006', 'KG-007', 'KG-008', 'KG-010',
+ 'KG-011', 'KG-012', 'KG-013', 'KG-021', 'KG-030', 'KG-037']
+
+$ kubectl get isr posture -n platform-system -o json | ...
+Counter({'trivy': 18})
+['TRIVY-VULN']
+```
+
+**Exceptions still match.** Neither `ScanException` was touched, and both still suppress the
+same findings on the same workloads, now on the manifest report:
+
+```
+hamlb-system       KG-001, KG-004  DaemonSet/platform-system--hamlb-gateway
+                                   hamlb-gateway-host-access
+monitoring-system  KG-004          DaemonSet/vm-stack-prometheus-node-exporter
+                                   node-exporter-host-access
+```
+
+**Asking for one kind does not produce the other.** A fresh namespace given only a
+`ManifestSecurityReport`:
+
+```
+$ kubectl get msr -n kg-split-check
+NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+posture   0          1      0        0     0            20s         20s
+
+$ kubectl get isr -n kg-split-check
+No resources found in kg-split-check namespace.
+```
+
+The controller log shows no errors and no RBAC denials across the whole round.

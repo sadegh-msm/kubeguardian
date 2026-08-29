@@ -55,8 +55,8 @@ func applyManifest(path string) {
 	}
 }
 
-func demoReport() (*securityv1alpha1.NamespaceSecurityReport, error) {
-	report := &securityv1alpha1.NamespaceSecurityReport{}
+func demoReport() (*securityv1alpha1.ManifestSecurityReport, error) {
+	report := &securityv1alpha1.ManifestSecurityReport{}
 	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: demoNamespace, Name: demoNamespace}, report)
 	return report, err
 }
@@ -71,7 +71,7 @@ var _ = Describe("Demo manifests", Ordered, func() {
 			if err != nil {
 				return nil
 			}
-			return findingIDs(report)
+			return findingIDs(&report.Status)
 		}, timeout, interval).Should(And(
 			ContainElement("KG-001"),
 			ContainElement("KG-004"),
@@ -112,12 +112,12 @@ var _ = Describe("Demo manifests", Ordered, func() {
 
 		report, err := demoReport()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-001"))
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-004"))
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-010"))
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-011"))
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-013"))
-		Expect(findingIDs(report)).NotTo(ContainElement("KG-008"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-001"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-004"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-010"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-011"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-013"))
+		Expect(findingIDs(&report.Status)).NotTo(ContainElement("KG-008"))
 		Expect(report.Status.Summary.Total).To(Equal(0))
 	})
 })

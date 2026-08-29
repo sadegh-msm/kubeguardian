@@ -1,8 +1,13 @@
 # Trivy source
 
 Reads the reports that [trivy-operator](https://aquasecurity.github.io/trivy-operator/)
-writes and turns them into KubeGuardian findings, so image-level problems appear in the
-same `NamespaceSecurityReport` as the built-in configuration checks.
+writes and turns them into KubeGuardian findings. This is the only source behind
+`ImageSecurityReport`; manifest checks land in `ManifestSecurityReport` and never mix with
+these.
+
+When trivy-operator is not installed, the adapter is disabled at startup and every
+`ImageSecurityReport` reports `ScanSucceeded=False` with reason `ScannerUnavailable`, so a
+missing scanner is visible rather than reading as a clean result.
 
 ## Why this exists
 

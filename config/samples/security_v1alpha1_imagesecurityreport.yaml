@@ -1,0 +1,5 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: ImageSecurityReport
+metadata:
+  name: kubeguardian-demo
+  namespace: kubeguardian-demo

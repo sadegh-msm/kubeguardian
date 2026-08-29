@@ -3,11 +3,12 @@
 KubeGuardian is a Kubernetes operator that continuously audits the security posture of
 every namespace in a cluster and publishes what it finds as a Kubernetes resource.
 
-You ask for a namespace to be audited by creating a `NamespaceSecurityReport` naming it.
-KubeGuardian fills in the status: the problems it detected, a concrete suggestion for each
-one, and a command or manifest you can apply to fix it. The report is refreshed
-automatically whenever a workload in that namespace is created or changed, so it tracks the
-cluster rather than a point in time.
+You ask for a namespace to be audited by creating a report in it: a
+`ManifestSecurityReport` for how the namespace is configured, an `ImageSecurityReport` for
+what its images contain, or both. KubeGuardian fills in the status: the problems it
+detected, a concrete suggestion for each one, and a command or manifest you can apply to
+fix it. Reports are refreshed automatically whenever a workload in that namespace is
+created or changed, so they track the cluster rather than a point in time.
 
 Nothing is scanned unless you ask for it. Creating a namespace does not create a report.
 
@@ -17,48 +18,75 @@ The reasoning behind the design, and what was deliberately left out, is in
 
 ## Asking for a scan
 
-Create a report in the namespace you want audited:
+There are two kinds of report, and you ask for whichever you want by creating it in the
+namespace you want audited.
+
+| Kind | Short | Answers | Findings |
+|---|---|---|---|
+| `ManifestSecurityReport` | `msr` | is this namespace configured safely? | `KG-*` |
+| `ImageSecurityReport` | `isr` | are the images it runs safe? | `TRIVY-*` |
 
 ```yaml
 apiVersion: security.kubeguardian.io/v1alpha1
-kind: NamespaceSecurityReport
+kind: ManifestSecurityReport
+metadata:
+  name: posture
+  namespace: payments
+---
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: ImageSecurityReport
 metadata:
   name: posture
   namespace: payments
 ```
 
-That is the whole object. The report audits the namespace it lives in, so there is nothing
-to configure and no way to point it at the wrong place. Its name is free; `posture` or the
-namespace name are both fine.
+That is the whole object, either of them. A report audits the namespace it lives in, so
+there is nothing to configure and no way to point it at the wrong place. Its name is free;
+`posture` or the namespace name are both fine.
 
-The report is namespaced rather than cluster-scoped so a team with access to only their own
+They are separate because the two questions are separate. A manifest finding is fixed by
+editing YAML and is usually the application team's; an image finding is fixed by rebuilding
+or bumping an image and is often someone else's. They also refresh on different cadences: a
+manifest report rescans the moment you edit a workload, while an image report only changes
+when the scanner produces new data. One status per question means one `lastScanTime` and
+one `ScanSucceeded` condition that each mean something precise.
+
+Create one, the other, or both. Nothing is scanned unless you ask for it.
+
+Reports are namespaced rather than cluster-scoped so a team with access to only their own
 namespace can read their own findings through the RoleBinding they already have, and cannot
 read anyone else's. See DESIGN.md for why that constraint decides the design.
 
-Deleting the report stops the scanning. Deleting the namespace takes the report with it.
+Deleting a report stops that scanning. Deleting the namespace takes both with it.
 
 ## What a report looks like
 
 ```console
-$ kubectl get nsr -n payments
-NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
-posture   0          1      0        0     0            31s         2m
+$ kubectl get msr,isr -n payments
+NAME                                                    CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+manifestsecurityreport.security.kubeguardian.io/posture 0          1      0        0     0            31s         2m
 
-$ kubectl get nsr -A
+NAME                                                    CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
+imagesecurityreport.security.kubeguardian.io/posture    2          9      14       0     0            4m          2m
+
+$ kubectl get msr -A
 NAMESPACE           NAME      CRITICAL   HIGH   MEDIUM   LOW   SUPPRESSED   LAST-SCAN   AGE
 payments            posture   0          1      0        0     0            31s         2m
-monitoring-system   posture   9          17     31       0     1            12s         2m
+monitoring-system   posture   0          17     31       0     1            12s         2m
 ```
 
+The two `LAST-SCAN` values differ, and that is the point: the manifest report rescanned
+when a workload was last edited, the image report on its own cadence.
+
 ```console
-$ kubectl get nsr posture -n monitoring-system -o yaml
+$ kubectl get msr posture -n monitoring-system -o yaml
 status:
   summary:
-    critical: 9
+    critical: 0
     high: 17
     medium: 31
     low: 0
-    total: 57
+    total: 48
     suppressed: 1
   findings:
     - id: KG-001
@@ -80,7 +108,7 @@ status:
     - type: ScanSucceeded
       status: "True"
       reason: ScanCompleted
-      message: 57 finding(s) across 3 severity level(s), 1 suppressed by exception
+      message: 48 finding(s) across 2 severity level(s), 1 suppressed by exception
   lastScanTime: "2026-08-27T17:50:54Z"
 ```
 
@@ -109,8 +137,10 @@ and read the result:
 make demo
 ```
 
-That applies `test/demo/01-insecure-namespace.yaml`, waits a moment, and prints the
-report. It produces fifteen findings, two of them critical.
+That applies `test/demo/01-insecure-namespace.yaml`, which asks for both kinds of report,
+waits a moment, and prints them. The manifest report produces fifteen findings, two of
+them critical. The image report stays empty unless trivy-operator is installed, and says
+so in its `ScanSucceeded` condition rather than reading as a clean result.
 
 An untouched `default` namespace usually reports a single high finding: it has no
 workloads, so most checks do not apply, but it does not enforce a Pod Security Standard.
@@ -131,7 +161,7 @@ directly and watch the counts move:
 kubectl patch deployment legacy-api -n kubeguardian-demo --type=json \
   -p='[{"op":"replace","path":"/spec/template/spec/hostNetwork","value":false}]'
 
-kubectl get nsr -n kubeguardian-demo -w
+kubectl get msr -n kubeguardian-demo -w
 ```
 
 ## Deploying into the cluster
@@ -150,26 +180,42 @@ make docker-build IMG=kubeguardian:test BASE_IMAGE=alpine:3.22
 
 Prefer a distroless or otherwise minimal base in production; `alpine` ships a shell.
 
-`make undeploy` removes the controller and `make uninstall` removes the CRD. Removing
-the CRD deletes every report; it does not touch the namespaces themselves.
+`make undeploy` removes the controller and `make uninstall` removes the CRDs. Removing
+a CRD deletes every report of that kind; it does not touch the namespaces themselves.
+
+### Upgrading from a build older than v0.6.0
+
+`NamespaceSecurityReport` carried both kinds of finding until v0.6.0 and no longer exists.
+The two new CRDs apply cleanly alongside it, so `make deploy` succeeds, but the old CRD
+stays behind serving reports nothing writes to any more. Delete it:
+
+```bash
+make deploy IMG=<your-image>
+kubectl delete crd namespacesecurityreports.security.kubeguardian.io
+```
+
+That deletes the old reports with it. They hold only derived data, so nothing is lost that
+asking again does not rebuild. Recreate them as whichever kind you want:
+
+```bash
+kubectl get ns -o name | sed 's|namespace/||' | while read -r ns; do
+  kubectl apply -f - <<EOF
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: ManifestSecurityReport
+metadata:
+  name: posture
+  namespace: $ns
+EOF
+done
+```
+
+`ScanException` objects are unaffected. They match on check ID, so an exception written
+against the old report keeps suppressing the same finding in whichever kind it now lands.
 
 ### Upgrading from a build older than v0.4.0
 
-`NamespaceSecurityReport` was cluster-scoped before v0.4.0. A CRD's `spec.scope` is
-immutable, so `kubectl apply` refuses the change:
-
-```
-The CustomResourceDefinition "namespacesecurityreports.security.kubeguardian.io"
-is invalid: spec.scope: Invalid value: "Namespaced": field is immutable
-```
-
-Delete the CRD first, which also deletes the old reports. They hold only derived data and
-are recreated by asking for a scan again:
-
-```bash
-kubectl delete crd namespacesecurityreports.security.kubeguardian.io
-make deploy IMG=<your-image>
-```
+`NamespaceSecurityReport` was also cluster-scoped before v0.4.0. If you are coming from
+that far back, deleting the CRD as above covers both changes at once.
 
 ## Configuration
 
@@ -226,7 +272,8 @@ and governance concerns rather than pod-security ones:
 `readOnlyRootFilesystem` is deliberately in the second table: it is common hardening
 advice but is not part of any Pod Security Standard level, so upstream does not check it.
 
-Image scanning adds two more, and only when trivy-operator is installed; see
+Everything above lands in a `ManifestSecurityReport`. The two identifiers below are the
+whole of `ImageSecurityReport`, and appear only when trivy-operator is installed; see
 [Vulnerability scanning](#vulnerability-scanning). Their severity comes from the scan.
 
 | ID | Check | Severity | Category |
@@ -299,13 +346,29 @@ node-exporter-host-access   ["KG-004"]   ["monitoring-system"]  2027-01-01T00:00
 
 ## Vulnerability scanning
 
-KubeGuardian reads image scan results from
-[trivy-operator](https://aquasecurity.github.io/trivy-operator/) when it is installed,
-and reports them alongside the built-in checks. This covers what the built-in engine
-structurally cannot see: CVEs in image layers, and credentials baked into images.
+`ImageSecurityReport` is filled in from
+[trivy-operator](https://aquasecurity.github.io/trivy-operator/). This covers what reading
+manifests structurally cannot see: CVEs in image layers, and credentials baked into images.
 
-If trivy-operator is not installed, KubeGuardian detects that at startup, logs one line,
-and runs exactly as it does without it. Nothing needs configuring to turn it off.
+If trivy-operator is not installed, KubeGuardian detects that at startup and says so on
+every image report rather than leaving one that reads as a clean result:
+
+```console
+$ kubectl get isr posture -n payments -o jsonpath='{.status.conditions[0]}' | jq
+{
+  "type": "ScanSucceeded",
+  "status": "False",
+  "reason": "ScannerUnavailable",
+  "message": "no image scanner is installed in this cluster, so no image data is available. Install trivy-operator and restart the KubeGuardian manager."
+}
+```
+
+`ManifestSecurityReport` is unaffected and runs exactly as it does with the scanner
+present. Nothing needs configuring to turn image scanning off; not creating an
+`ImageSecurityReport` is how you decline it.
+
+Detection happens once at startup, so installing trivy-operator afterwards needs a restart
+of the KubeGuardian manager before image reports start filling in.
 
 Installation and the design of the adapter are documented in
 [internal/sources/trivy/README.md](internal/sources/trivy/README.md).
@@ -325,9 +388,13 @@ if needed, and runs everything:
   upstream check has a `KG-` mapping, each violation produces the expected identifier, and
   every finding it emits carries a suggestion, a remediation and a reference
 - Tests for ordering determinism, deduplication and severity filtering
-- Integration tests against a real API server via envtest, which start the manager and
+- Integration tests against a real API server via envtest, which start both managers and
   assert that asking for a scan produces findings, that an insecure workload produces
   the expected identifiers, and that editing that workload changes the report
+- Integration tests that the two kinds are independent: a `ManifestSecurityReport` carries
+  only `KG-` findings and does not bring an `ImageSecurityReport` into being, and an
+  `ImageSecurityReport` with no scanner installed reports `ScannerUnavailable` rather than
+  an empty success
 - A test that applies the shipped demo manifests and asserts the findings they produce, so
   the documented walkthrough cannot silently rot
 - Table-driven tests for `ScanException` matching: check ID, namespace list, namespace
@@ -354,15 +421,16 @@ stability, schema validation, flag handling and workload coverage. Results are r
 ## Repository layout
 
 ```
-api/v1alpha1/          CRD types for NamespaceSecurityReport and Finding
+api/v1alpha1/          CRD types for the two reports, ScanException and Finding
 cmd/                   manager entrypoint and flags
 internal/snapshot/     collects everything in a namespace in one pass
 internal/checks/       one file per rule, plus the registry
 internal/sources/      the Source interface, ordering, deduplication and summaries
 internal/exceptions/   ScanException matching and suppression
-internal/sources/builtin/   runs the built-in check registry
-internal/sources/trivy/     reads trivy-operator reports
-internal/controller/   reconciler and the workload-to-namespace event mapping
+internal/sources/builtin/       runs the built-in check registry
+internal/sources/podsecurity/   wraps the upstream Pod Security Standards evaluator
+internal/sources/trivy/         reads trivy-operator reports
+internal/controller/   the shared scanner and one reconciler per report kind
 config/                kustomize manifests for CRD, RBAC and the manager
 test/demo/             insecure and hardened namespaces used by make demo
 ```

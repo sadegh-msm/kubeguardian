@@ -22,7 +22,10 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the kubeguardian itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- namespacesecurityreport_admin_role.yaml
-- namespacesecurityreport_editor_role.yaml
-- namespacesecurityreport_viewer_role.yaml
+- manifestsecurityreport_admin_role.yaml
+- manifestsecurityreport_editor_role.yaml
+- manifestsecurityreport_viewer_role.yaml
+- imagesecurityreport_admin_role.yaml
+- imagesecurityreport_editor_role.yaml
+- imagesecurityreport_viewer_role.yaml
 
