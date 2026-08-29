@@ -31,7 +31,18 @@ import (
 type Workload struct {
 	Kind     string
 	Name     string
-	Template corev1.PodTemplateSpec
+	Template *corev1.PodTemplateSpec
+
+	containers []corev1.Container
+}
+
+func newWorkload(kind, name string, template *corev1.PodTemplateSpec) Workload {
+	spec := &template.Spec
+	containers := make([]corev1.Container, 0, len(spec.InitContainers)+len(spec.Containers))
+	containers = append(containers, spec.InitContainers...)
+	containers = append(containers, spec.Containers...)
+
+	return Workload{Kind: kind, Name: name, Template: template, containers: containers}
 }
 
 func (w Workload) Ref() (string, string) {
@@ -39,10 +50,7 @@ func (w Workload) Ref() (string, string) {
 }
 
 func (w Workload) Containers() []corev1.Container {
-	spec := w.Template.Spec
-	all := make([]corev1.Container, 0, len(spec.InitContainers)+len(spec.Containers))
-	all = append(all, spec.InitContainers...)
-	return append(all, spec.Containers...)
+	return w.containers
 }
 
 type Snapshot struct {
@@ -57,6 +65,8 @@ type Snapshot struct {
 	RoleBindings    []rbacv1.RoleBinding
 	ResourceQuotas  []corev1.ResourceQuota
 	LimitRanges     []corev1.LimitRange
+
+	workloads []Workload
 }
 
 func (s *Snapshot) Name() string {
@@ -64,20 +74,30 @@ func (s *Snapshot) Name() string {
 }
 
 func (s *Snapshot) Workloads() []Workload {
+	if s.workloads != nil {
+		return s.workloads
+	}
+
 	workloads := make([]Workload, 0, len(s.Deployments)+len(s.StatefulSets)+len(s.DaemonSets)+len(s.CronJobs))
-	for _, d := range s.Deployments {
-		workloads = append(workloads, Workload{Kind: "Deployment", Name: d.Name, Template: d.Spec.Template})
+	for i := range s.Deployments {
+		d := &s.Deployments[i]
+		workloads = append(workloads, newWorkload("Deployment", d.Name, &d.Spec.Template))
 	}
-	for _, s := range s.StatefulSets {
-		workloads = append(workloads, Workload{Kind: "StatefulSet", Name: s.Name, Template: s.Spec.Template})
+	for i := range s.StatefulSets {
+		set := &s.StatefulSets[i]
+		workloads = append(workloads, newWorkload("StatefulSet", set.Name, &set.Spec.Template))
 	}
-	for _, d := range s.DaemonSets {
-		workloads = append(workloads, Workload{Kind: "DaemonSet", Name: d.Name, Template: d.Spec.Template})
+	for i := range s.DaemonSets {
+		d := &s.DaemonSets[i]
+		workloads = append(workloads, newWorkload("DaemonSet", d.Name, &d.Spec.Template))
 	}
-	for _, c := range s.CronJobs {
-		workloads = append(workloads, Workload{Kind: "CronJob", Name: c.Name, Template: c.Spec.JobTemplate.Spec.Template})
+	for i := range s.CronJobs {
+		c := &s.CronJobs[i]
+		workloads = append(workloads, newWorkload("CronJob", c.Name, &c.Spec.JobTemplate.Spec.Template))
 	}
-	return workloads
+
+	s.workloads = workloads
+	return s.workloads
 }
 
 func Collect(ctx context.Context, c client.Reader, namespace corev1.Namespace) (*Snapshot, error) {

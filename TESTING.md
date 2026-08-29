@@ -732,3 +732,81 @@ option for anyone who does not already have the base on disk. It is not what was
 The push itself needed the usual retries — one layer retried for about a minute before
 completing — and was verified with `docker buildx imagetools inspect` rather than trusting
 the push output, since `make docker-buildx` ignores buildx failures by design.
+
+---
+
+# Sixth round: what a reconcile actually costs
+
+A workload event rescans the whole namespace rather than the changed workload. This round
+measures that, so the choice rests on numbers rather than on intuition.
+
+## S1 — scan cost against namespace size
+
+`internal/sources/scan_bench_test.go` builds a synthetic namespace of N Deployments, a
+third of them on `hostNetwork` and a fifth privileged, and runs the full in-memory scan:
+both sources, then `Normalize`, `Truncate` and `Summarize`. Apple M-series, `go test
+-bench`, three sizes:
+
+```
+                       before            after
+BenchmarkScan10      208 µs   256 KB    152 µs   177 KB
+BenchmarkScan100     1.42 ms  2.43 MB   1.11 ms  1.57 MB
+BenchmarkScan1000    10.9 ms  26.7 MB   8.83 ms  19.0 MB
+```
+
+Cost is linear in the number of workloads, as expected from checks that are pure functions
+over a snapshot. A thousand-workload namespace — far larger than anything on the Hamravesh
+cluster, where the biggest is 17 workloads — costs about nine milliseconds of CPU.
+
+Broken down by stage at 1000 workloads, before the changes below:
+
+```
+BenchmarkBuiltin1000       2.25 ms   6.5 MB    34,129 allocs
+BenchmarkPodSecurity1000   2.93 ms   6.8 MB    60,216 allocs
+BenchmarkNormalize1000     4.41 ms   4.9 MB    70,186 allocs
+```
+
+`Normalize` was the most expensive stage, which was not the expected answer.
+
+## S2 — two pieces of waste the measurement exposed
+
+**`Snapshot.Workloads()` was rebuilt on every call.** Five checks and the pod-security
+source each call it, so the four workload kinds were flattened six times per scan and every
+pod template was copied six times. It is now computed once per snapshot and reused, along
+with each workload's combined init and regular container list. A snapshot is built inside
+one reconcile and never shared, so no locking is needed.
+
+**`sources.Normalize` allocated inside its sort comparator.** The deduplication key was a
+four-way `strings.Join`, and the comparator called `ResourceRef.String()` on both sides of
+every comparison — an allocation on every step of an O(n log n) sort. The key is now a
+comparable struct, and the comparator compares `Kind`, `Name` and `Container` directly.
+
+```
+BenchmarkNormalize1000     4.41 ms → 3.30 ms
+                          70,186 allocs → 34 allocs
+```
+
+The full scan at 1000 workloads improved by 19% in time, 29% in allocated bytes and 44% in
+allocation count. No finding changed: the whole suite passes unmodified, including the
+determinism and deduplication tests in `internal/sources`.
+
+Sort order does change in one edge case. Comparing the joined string ordered
+`Deployment/a:b` before `Deployment/a-c`, because `:` sorts after `-`; comparing fields
+orders by name first, so `a` now precedes `a-c`. Both are total orders and both are
+deterministic, which is all the determinism test and the status-write comparison require.
+
+## S3 — the deployed operator
+
+`v0.5.1` rolled out on the Hamravesh cluster. Every report was rescanned, the findings and
+both suppressions are unchanged from `v0.5.0`, and the log shows no errors.
+
+Memory was 26 Mi before and 28 Mi after, which is noise. The
+`cache.TransformStripManagedFields()` added in this round strips `managedFields` from every
+cached object, and its benefit is proportional to how many objects the cluster-wide cache
+holds. This cluster has 36 Deployments and 102 ServiceAccounts across 14 namespaces, so
+there is nothing to see at this size. It is kept because the cache is cluster-wide by
+necessity and a KaaS cluster is not this small.
+
+The Trivy critical counts moved again during the round — `monitoring-system` 9 to 10,
+`platform-system` 12 to 14 — which is trivy-operator rescanning on its own cadence, the
+same drift recorded in P5.

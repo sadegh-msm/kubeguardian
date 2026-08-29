@@ -151,6 +151,69 @@ predicate because those objects carry no status and every update to them is mean
 A `RequeueAfter` of `--rescan-interval` backs the watches up, so posture drift is caught
 even in a namespace that produces no events at all.
 
+## The unit of work is the namespace, not the workload
+
+A workload event does not rescan that workload. It rescans the namespace the workload is
+in: `snapshot.Collect` lists all ten resource types, and every source evaluates every
+workload. This is deliberate, and it is worth saying why, because "rescan only what
+changed" is the obvious alternative.
+
+**The report is a namespace-level aggregate.** Its status has to hold the findings for
+every workload in the namespace, so any incremental scheme has to keep the previous
+findings somewhere and splice the changed workload's findings into them. That means
+tracking which stored finding belongs to which workload, evicting findings when a workload
+is deleted, and rebuilding the whole thing after an operator restart. Cache invalidation,
+in other words, in exchange for saving CPU that is already cheap.
+
+**The reads are free.** `snapshot.Collect` uses the manager's cached client, so every
+`List` is served from the informer's namespace-indexed local store. No API server round
+trip happens, whatever the size of the namespace.
+
+**The evaluation is cheap and linear.** Measured on `internal/sources/scan_bench_test.go`,
+which runs both sources plus `Normalize`, `Truncate` and `Summarize` over a synthetic
+namespace:
+
+| Workloads in namespace | Time | Allocated |
+|---|---|---|
+| 10 | 0.15 ms | 177 KB |
+| 100 | 1.1 ms | 1.6 MB |
+| 1000 | 8.8 ms | 19 MB |
+
+A thousand-workload namespace costs about nine milliseconds of CPU. The two things a
+reconcile does that are *not* free are the Trivy adapter's two uncached `List` calls and
+the status write to etcd, and both are fixed costs per reconcile that incremental
+evaluation would not remove. At the point where re-evaluating the namespace is the
+bottleneck, the API traffic already is.
+
+**The reconcile count is bounded, not the event count.** A Helm release touching fifty
+Deployments enqueues the same report key fifty times, and the workqueue collapses them:
+adding a key that is already queued is a no-op. Fifty events produce one or two scans, not
+fifty.
+
+What this does mean is that the scan itself should not waste work, and two places did:
+
+- `Snapshot.Workloads()` flattened the four workload kinds on every call, and six checks
+  and sources call it. The flattened list and each workload's container list are now built
+  once per snapshot and reused. A snapshot belongs to a single reconcile and is never
+  shared across goroutines, so no locking is involved.
+- `sources.Normalize` built its deduplication key by joining four strings, and its sort
+  comparator called `ResourceRef.String()` on every comparison, so an O(n log n) sort
+  allocated on every step. The key is now a comparable struct and the comparator compares
+  the fields directly. At a thousand workloads that took `Normalize` from about 70,000
+  allocations to 34.
+
+Together those cut a thousand-workload scan by roughly a fifth in time and by 44% in
+allocations, without changing a single finding.
+
+The cache is cluster-wide, which is the one genuine cost that grows with the cluster rather
+than with the namespace: the operator holds every Deployment, ServiceAccount, Role and the
+rest in memory, including namespaces nobody asked to audit. `DefaultTransform:
+cache.TransformStripManagedFields()` drops the `managedFields` bookkeeping from every
+cached object, which is often a large fraction of it. Scoping the cache to only the
+namespaces that hold a report would be better still, but controller-runtime fixes a cache's
+namespace set at startup and reports are created at any time, so that is not available
+without watching the whole cluster anyway.
+
 ## Not writing status in a loop
 
 An operator that watches its own resource and writes to it on every reconcile will spin.

@@ -30,15 +30,22 @@ type Source interface {
 	Collect(ctx context.Context, snap *snapshot.Snapshot) ([]securityv1alpha1.Finding, error)
 }
 
+type identity struct {
+	id       string
+	resource securityv1alpha1.ResourceRef
+	source   string
+	message  string
+}
+
 func Normalize(findings []securityv1alpha1.Finding, minSeverity securityv1alpha1.Severity) []securityv1alpha1.Finding {
 	filtered := make([]securityv1alpha1.Finding, 0, len(findings))
-	seen := make(map[string]struct{}, len(findings))
+	seen := make(map[identity]struct{}, len(findings))
 
 	for _, finding := range findings {
 		if !finding.Severity.AtLeast(minSeverity) {
 			continue
 		}
-		key := strings.Join([]string{finding.ID, finding.Resource.String(), finding.Source, finding.Message}, "|")
+		key := identity{finding.ID, finding.Resource, finding.Source, finding.Message}
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
@@ -53,10 +60,20 @@ func Normalize(findings []securityv1alpha1.Finding, minSeverity securityv1alpha1
 		if left.ID != right.ID {
 			return strings.Compare(left.ID, right.ID)
 		}
-		return strings.Compare(left.Resource.String(), right.Resource.String())
+		return compareResource(left.Resource, right.Resource)
 	})
 
 	return filtered
+}
+
+func compareResource(left, right securityv1alpha1.ResourceRef) int {
+	if order := strings.Compare(left.Kind, right.Kind); order != 0 {
+		return order
+	}
+	if order := strings.Compare(left.Name, right.Name); order != 0 {
+		return order
+	}
+	return strings.Compare(left.Container, right.Container)
 }
 
 func Summarize(findings []securityv1alpha1.Finding) securityv1alpha1.SeveritySummary {

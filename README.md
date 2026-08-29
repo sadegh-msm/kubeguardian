@@ -334,6 +334,13 @@ if needed, and runs everything:
   selector, resource kind and name, expiry, and the wildcard
 - Trivy adapter tests over fixture reports, including 300 CVEs collapsing to one finding
   and the disabled-adapter path returning nothing without erroring
+- Benchmarks in `internal/sources/scan_bench_test.go` that measure a full scan against
+  namespaces of 10, 100 and 1000 workloads, so the cost of rescanning a whole namespace on
+  every workload event is a number rather than an assumption
+
+```bash
+go test ./internal/sources/ -run '^$' -bench .
+```
 
 ```bash
 make lint
