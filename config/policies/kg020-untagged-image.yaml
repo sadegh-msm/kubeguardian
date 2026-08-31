@@ -1,0 +1,20 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg020-untagged-image
+spec:
+  id: KG-020
+  severity: Medium
+  category: SupplyChain
+  reference: https://kubernetes.io/docs/concepts/containers/images/#image-names
+  scope: Container
+  violation: "imageDigest == '' && imageTag == ''"
+  message: >-
+    container "${container.name}" uses image "${container.image}" with no tag, which
+    resolves to latest and can change between restarts
+  suggestion: >-
+    Pin the image to an immutable tag, or better a digest, so every replica runs the
+    artifact you tested.
+  remediation: >-
+    kubectl set image ${workload.kind}/${workload.name}
+    ${container.name}=${container.image}@sha256:<digest> -n ${namespaceObject.metadata.name}

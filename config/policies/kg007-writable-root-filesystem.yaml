@@ -1,0 +1,21 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg007-writable-root-filesystem
+spec:
+  id: KG-007
+  severity: Medium
+  category: PodSecurity
+  reference: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+  scope: Container
+  violation: "!container.securityContext.readOnlyRootFilesystem"
+  message: >-
+    container "${container.name}" has a writable root filesystem, letting an attacker drop
+    tooling or modify binaries inside the running container
+  suggestion: >-
+    Set securityContext.readOnlyRootFilesystem to true and mount an emptyDir over any
+    directory the process must write to, such as /tmp.
+  remediation: >-
+    kubectl patch ${workload.kind.lowerAscii()} ${workload.name} -n
+    ${namespaceObject.metadata.name} --type=json
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/${containerIndex}/securityContext/readOnlyRootFilesystem","value":true}]'

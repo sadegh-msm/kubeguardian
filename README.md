@@ -120,15 +120,20 @@ status:
 
 ## Running it
 
-The fastest way to see it work is to install the CRD and run the controller on your
-machine against a cluster. No image build is involved.
+The fastest way to see it work is to install the CRDs and the checks, then run the
+controller on your machine against a cluster. No image build is involved.
 
 ```bash
 export KUBECONFIG=/path/to/your/kubeconfig
 
-make install
+make install            # the CRDs
+make install-policies   # the nine shipped SecurityCheck objects
 make run
 ```
+
+`make deploy` does both for you; `install-policies` exists for the out-of-cluster path. The
+manifest checks live in those objects, so without them a report legitimately contains no
+`KG-` findings at all.
 
 In a second terminal, create a deliberately insecure namespace, ask for it to be audited,
 and read the result:
@@ -256,18 +261,38 @@ as Kubernetes publishes them. KubeGuardian evaluates every pod template at both 
 | KG-036 | Probe or lifecycle hook targets a host address | Medium | `hostProbesAndHostLifecycle` |
 | KG-037 | Pod uses a volume type `restricted` does not permit | Medium | `restrictedVolumes` |
 
-The rest are written here, because nothing upstream evaluates them. They are namespace
-and governance concerns rather than pod-security ones:
+The rest are `SecurityCheck` objects, not code. They are namespace and governance concerns
+that nothing upstream evaluates, and they ship under `config/policies/` so you can read,
+edit or replace them without rebuilding anything:
 
-| ID | Check | Severity | Category |
+| ID | Check | Severity | Scope |
 |---|---|---|---|
-| KG-007 | Container has a writable root filesystem | Medium | PodSecurity |
-| KG-010 | Namespace has no default-deny ingress NetworkPolicy | High | Network |
-| KG-011 | Namespace does not enforce a Pod Security Standard | High | Governance |
-| KG-012 | Default ServiceAccount automounts an API token | Medium | RBAC |
-| KG-013 | Namespaced Role grants a wildcard | High | RBAC |
-| KG-020 | Image uses a mutable tag or none at all | Medium | SupplyChain |
-| KG-021 | Container is missing resource requests or limits | Medium | Governance |
+| KG-007 | Container has a writable root filesystem | Medium | Container |
+| KG-010 | Namespace has no default-deny ingress NetworkPolicy | High | Namespace |
+| KG-011 | Namespace does not enforce a Pod Security Standard | High | Namespace |
+| KG-012 | Default ServiceAccount automounts an API token | Medium | ServiceAccount |
+| KG-013 | Namespaced Role grants a wildcard | High | Role |
+| KG-020 | Image uses a mutable tag or none at all | Medium | Container |
+| KG-021 | Container is missing resource requests or limits | Medium | Container |
+
+```console
+$ kubectl get seccheck
+NAME                                     ID       SEVERITY   SCOPE            READY   AGE
+kg007-writable-root-filesystem           KG-007   Medium     Container        True    2d
+kg010-default-deny-network-policy        KG-010   High       Namespace        True    2d
+kg011-pod-security-admission-missing     KG-011   High       Namespace        True    2d
+kg011-pod-security-admission-privileged  KG-011   High       Namespace        True    2d
+kg012-default-service-account-token      KG-012   Medium     ServiceAccount   True    2d
+kg013-wildcard-rbac                      KG-013   High       Role             True    2d
+kg020-mutable-image-tag                  KG-020   Medium     Container        True    2d
+kg020-untagged-image                     KG-020   Medium     Container        True    2d
+kg021-resource-limits                    KG-021   Medium     Container        True    2d
+```
+
+Nine objects for seven identifiers, because two of the checks say two different things
+depending on what is wrong, and one predicate per object reads better than a conditional
+inside one. Several objects may share an `id`; a `ScanException` matches on the `id`, so it
+covers all of them.
 
 `readOnlyRootFilesystem` is deliberately in the second table: it is common hardening
 advice but is not part of any Pod Security Standard level, so upstream does not check it.
@@ -298,6 +323,88 @@ There is deliberately no overall score. An earlier version had one and it was re
 it floored at zero, so most namespaces on a real cluster read `0` and the number stopped
 discriminating exactly where triage matters. Severity counts say the same thing without
 implying a precision the heuristic never had.
+
+## Writing a check
+
+A manifest check is a `SecurityCheck` object holding CEL expressions — the same language
+Kubernetes uses for `ValidatingAdmissionPolicy` and CRD validation rules. Adding a rule is
+applying a manifest.
+
+```yaml
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: require-team-label
+spec:
+  id: ACME-001
+  severity: Low
+  category: Governance
+  scope: Namespace
+  violation: "!('team' in namespaceObject.metadata.labels)"
+  message: namespace "${namespaceObject.metadata.name}" has no team label, so nobody owns it
+  suggestion: Label the namespace with the team that owns it.
+  remediation: kubectl label namespace ${namespaceObject.metadata.name} team=<team>
+```
+
+`violation` must evaluate to a boolean; true means the subject has the problem. In
+`message`, `suggestion` and `remediation`, text inside `${...}` is CEL and everything else
+is literal, so a multi-line YAML remediation keeps its formatting.
+
+`scope` decides the subject and how many findings one check can produce:
+
+| `scope` | Evaluated | Subject variable |
+|---|---|---|
+| `Namespace` | once per namespace | — |
+| `Workload` | once per Deployment, StatefulSet, DaemonSet, CronJob | `workload` |
+| `Container` | once per container, init containers included | `container`, `workload` |
+| `Role` | once per Role | `role` |
+| `ServiceAccount` | once per ServiceAccount | `serviceAccount` |
+
+Every scope can also read the whole namespace: `namespaceObject`, `workloads`,
+`networkPolicies`, `serviceAccounts` and `roles`. It is spelled `namespaceObject` because
+CEL reserves `namespace` as an identifier, the same reason `ValidatingAdmissionPolicy`
+spells it that way.
+
+`Container` scope adds three values computed before evaluation: `imageTag`, `imageDigest`
+and `containerIndex`. They exist because splitting an image reference is fiddly —
+`registry:5000/app` is untagged while `registry:5000/app:2.0` is not — and because a
+`kubectl patch` path needs the container's index. **They are parsing primitives, never
+judgements.** A derived value that encoded an opinion would put the rule back in the code
+with a YAML wrapper around it.
+
+When a message has to name which of several conditions failed, compute it in `bindings`,
+which are evaluated first and visible everywhere after:
+
+```yaml
+  bindings:
+    missing: >-
+      [ 'memory' in container.resources.limits   ? '' : 'memory limit',
+        'cpu'    in container.resources.requests ? '' : 'cpu request'
+      ].filter(f, f != '')
+  violation: missing.size() > 0
+  message: container "${container.name}" is missing ${joinFields(missing)}
+```
+
+Besides the CEL standard library you get strings, lists, regex and Kubernetes `quantity()`
+comparison, plus `joinFields()`, which renders a list as "a, b and c".
+
+**A check that does not compile produces no findings and says so on its own object**, so a
+typo is visible where you made it rather than as a report that quietly lost a rule:
+
+```console
+$ kubectl get seccheck require-team-label
+NAME                 ID        SEVERITY   SCOPE       READY   AGE
+require-team-label   ACME-001  Low        Namespace   False   10s
+
+$ kubectl get seccheck require-team-label -o jsonpath='{.status.conditions[0].message}'
+violation: ERROR: <input>:1:30: undefined field 'labals'
+```
+
+Evaluation is capped by a cost budget, so an expression that walks the namespace
+quadratically is stopped rather than allowed to stall a reconcile.
+
+Editing any `SecurityCheck` rescans every `ManifestSecurityReport`, so a change to a rule
+shows up in the reports without waiting.
 
 ## Accepting a risk
 
@@ -403,9 +510,9 @@ if needed, and runs everything:
   selector, resource kind and name, expiry, and the wildcard
 - Trivy adapter tests over fixture reports, including 300 CVEs collapsing to one finding
   and the disabled-adapter path returning nothing without erroring
-- Benchmarks in `internal/sources/scan_bench_test.go` that measure a full scan against
-  namespaces of 10, 100 and 1000 workloads, so the cost of rescanning a whole namespace on
-  every workload event is a number rather than an assumption
+- Benchmarks in `internal/policy/bench_test.go` and `internal/sources/scan_bench_test.go`
+  that measure a scan against namespaces of 10, 100 and 1000 workloads, so the cost of CEL
+  evaluation is a number rather than an assumption
 
 ```bash
 go test ./internal/sources/ -run '^$' -bench .
@@ -423,16 +530,18 @@ stability, schema validation, flag handling and workload coverage. Results are r
 ## Repository layout
 
 ```
-api/v1alpha1/          CRD types for the two reports, ScanException and Finding
+api/v1alpha1/          CRD types for the two reports, SecurityCheck, ScanException
 cmd/                   manager entrypoint and flags
 internal/snapshot/     collects everything in a namespace in one pass
-internal/checks/       one file per rule, plus the registry
+internal/policy/       compiles and evaluates SecurityCheck expressions
 internal/sources/      the Source interface, ordering, deduplication and summaries
 internal/exceptions/   ScanException matching and suppression
-internal/sources/builtin/       runs the built-in check registry
+internal/sources/policy/        evaluates the SecurityCheck objects in the cluster
 internal/sources/podsecurity/   wraps the upstream Pod Security Standards evaluator
 internal/sources/trivy/         reads trivy-operator reports
-internal/controller/   the shared scanner and one reconciler per report kind
-config/                kustomize manifests for CRD, RBAC and the manager
+internal/controller/   the shared scanner, one reconciler per report kind, and the
+                       SecurityCheck compiler that reports whether a rule is valid
+config/policies/       the nine shipped SecurityCheck manifests
+config/                kustomize manifests for CRDs, RBAC and the manager
 test/demo/             insecure and hardened namespaces used by make demo
 ```

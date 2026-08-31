@@ -1,0 +1,10 @@
+resources:
+- kg007-writable-root-filesystem.yaml
+- kg010-default-deny-network-policy.yaml
+- kg011-pod-security-admission-missing.yaml
+- kg011-pod-security-admission-privileged.yaml
+- kg012-default-service-account-token.yaml
+- kg013-wildcard-rbac.yaml
+- kg020-mutable-image-tag.yaml
+- kg020-untagged-image.yaml
+- kg021-resource-limits.yaml

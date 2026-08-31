@@ -152,7 +152,7 @@ var _ = Describe("ManifestSecurityReport controller", func() {
 		for _, finding := range report.Status.Findings {
 			Expect(finding.Suggestion).NotTo(BeEmpty())
 			Expect(finding.Remediation).NotTo(BeEmpty())
-			Expect(finding.Source).To(BeElementOf("builtin", "pod-security"))
+			Expect(finding.Source).To(BeElementOf("policy", "pod-security"))
 		}
 	})
 

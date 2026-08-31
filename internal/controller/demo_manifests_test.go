@@ -25,6 +25,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -55,6 +58,20 @@ func applyManifest(path string) {
 	}
 }
 
+// ensureDefaultServiceAccount creates what a real cluster creates for us.
+// envtest runs the API server without kube-controller-manager, so the default
+// ServiceAccount every namespace normally has is absent, and KG-012 has nothing
+// to report on.
+func ensureDefaultServiceAccount(namespace string) {
+	account := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: namespace},
+	}
+	err := k8sClient.Create(ctx, account)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
 func demoReport() (*securityv1alpha1.ManifestSecurityReport, error) {
 	report := &securityv1alpha1.ManifestSecurityReport{}
 	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: demoNamespace, Name: demoNamespace}, report)
@@ -65,6 +82,7 @@ var _ = Describe("Demo manifests", Ordered, func() {
 
 	It("flags the insecure namespace", func() {
 		applyManifest("01-insecure-namespace.yaml")
+		ensureDefaultServiceAccount(demoNamespace)
 
 		Eventually(func() []string {
 			report, err := demoReport()

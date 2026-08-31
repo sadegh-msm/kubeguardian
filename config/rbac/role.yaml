@@ -81,6 +81,7 @@ rules:
   resources:
   - imagesecurityreports/status
   - manifestsecurityreports/status
+  - securitychecks/status
   verbs:
   - get
   - patch
@@ -89,6 +90,7 @@ rules:
   - security.kubeguardian.io
   resources:
   - scanexceptions
+  - securitychecks
   verbs:
   - get
   - list

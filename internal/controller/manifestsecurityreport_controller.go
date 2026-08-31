@@ -46,7 +46,7 @@ type ManifestSecurityReportReconciler struct {
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=manifestsecurityreports,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=manifestsecurityreports/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=security.kubeguardian.io,resources=manifestsecurityreports/finalizers,verbs=update
-// +kubebuilder:rbac:groups=security.kubeguardian.io,resources=scanexceptions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=security.kubeguardian.io,resources=scanexceptions;securitychecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list;watch
@@ -114,6 +114,7 @@ func (r *ManifestSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) er
 		Watches(&rbacv1.Role{}, toReports).
 		Watches(&corev1.ServiceAccount{}, toReports).
 		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.allReports)).
+		Watches(&securityv1alpha1.SecurityCheck{}, handler.EnqueueRequestsFromMapFunc(r.allReports)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Named("manifestsecurityreport").
 		Complete(r)

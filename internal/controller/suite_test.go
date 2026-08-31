@@ -34,11 +34,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/yaml"
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
+	"github.com/sadegh-msm/kubeguardian/internal/policy"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
-	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/podsecurity"
+	policysource "github.com/sadegh-msm/kubeguardian/internal/sources/policy"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -98,10 +100,22 @@ var _ = BeforeSuite(func() {
 	podSecurity, err := podsecurity.New()
 	Expect(err).NotTo(HaveOccurred())
 
+	By("applying the shipped security checks")
+	applyShippedPolicies()
+
+	registry := policy.NewRegistry()
+
+	err = (&SecurityCheckReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	err = (&ManifestSecurityReportReconciler{
 		Scanner: Scanner{
 			Client:      mgr.GetClient(),
-			Sources:     []sources.Source{builtin.NewEngine(), podSecurity},
+			Sources:     []sources.Source{policysource.New(mgr.GetClient(), registry), podSecurity},
 			MinSeverity: securityv1alpha1.SeverityLow,
 			MaxFindings: 200,
 		},
@@ -156,4 +170,28 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// applyShippedPolicies loads config/policies into the test API server. The
+// manifest checks live there rather than in Go, so without them a report would
+// legitimately contain no KG findings at all.
+func applyShippedPolicies() {
+	dir := filepath.Join("..", "..", "config", "policies")
+	entries, err := os.ReadDir(dir)
+	Expect(err).NotTo(HaveOccurred())
+
+	applied := 0
+	for _, entry := range entries {
+		if entry.Name() == "kustomization.yaml" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		Expect(err).NotTo(HaveOccurred())
+
+		check := &securityv1alpha1.SecurityCheck{}
+		Expect(yaml.Unmarshal(raw, check)).To(Succeed())
+		Expect(k8sClient.Create(ctx, check)).To(Succeed())
+		applied++
+	}
+	Expect(applied).To(BeNumerically(">", 0))
 }

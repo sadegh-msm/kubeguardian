@@ -6,7 +6,7 @@ Three layers, each answering a different question.
 |---|---|---|---|
 | Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
 | Integration | Do the controllers behave against a real API server? | envtest control plane, both managers started | 12 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus seven later rounds, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus eight later rounds; the ninth is pending a deploy |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -1037,3 +1037,147 @@ with no `namespaces` and no `namespaceSelector` matches everywhere — but it is
 largest remaining source of a synchronised rescan, and on a cluster with thousands of
 namespaces it would be a thundering herd. Narrowing it to the namespaces an exception names
 is possible and is not done here.
+
+---
+
+# Ninth round: the checks become configuration
+
+The seven remaining hand-written checks became `SecurityCheck` objects holding CEL
+expressions. `internal/checks` and `internal/sources/builtin` are gone. This round is
+mostly about one question: did any finding change?
+
+## E1 — the migration is provably behaviour-preserving
+
+Before deleting anything, the shipped policies were run side by side with the Go checks
+they replace over five fixtures — an insecure namespace, a hardened one, one enforcing the
+privileged Pod Security Standard, one with partial resource requests and a registry-port
+image, and one with no workloads at all — and every field of every finding compared: id,
+severity, category, resource, message, suggestion, remediation and reference.
+
+That comparison found three real differences, all of which were fixed rather than
+accepted:
+
+```
+KG-011  indexing a missing map key errors in CEL rather than defaulting, so the
+        privileged check needed an `in` guard before the lookup
+KG-020  the Go remediation used the capitalised Kind ("Deployment/api"); the policy
+        lowercased it
+KG-010  a YAML block scalar written with `|` keeps its trailing newline, which the Go
+        raw string did not have; `|-` fixed it
+```
+
+Two further differences were design choices rather than defects, and the policies were
+reshaped instead:
+
+- **KG-012 moved from Namespace scope to ServiceAccount scope.** The Go check emitted a
+  finding naming `ServiceAccount/default` while iterating workloads. Scoping the check to
+  the ServiceAccount makes the resource reference fall out naturally instead of needing an
+  override field in the API.
+- **KG-011 and KG-020 became two objects each.** Both said two different things depending
+  on what was wrong — no label versus `privileged`, no tag versus `latest`. One predicate
+  per object reads better than a conditional inside one message. Nine objects now produce
+  seven identifiers, and a `ScanException` matching on the id covers both halves.
+
+With those settled, the output matches exactly. The comparison is now frozen as a golden
+file, `internal/policy/testdata/expected_findings.txt`, captured from the Go checks before
+they were deleted, so the shipped manifests stay honest as they are edited.
+
+## E2 — what the CEL environment can and cannot do
+
+Established by probing before writing any of it, since the whole design depended on it:
+
+- `ext.ParseStructTag("json")` gives Kubernetes field names, so an expression reads
+  `container.securityContext.readOnlyRootFilesystem`. `ext.ParseStructTags(true)` does
+  **not** — it parses the `cel` tag, which Kubernetes types do not carry.
+- Nested types resolve from registering only the top-level struct.
+- A nil pointer reads as the zero value rather than erroring, so
+  `!container.securityContext.readOnlyRootFilesystem` is correct for a container with no
+  security context at all.
+- `has()` distinguishes a pointer to `false` from a nil pointer, which is what lets KG-012
+  tell "automounting explicitly disabled" from "not configured".
+- `namespace` is a **reserved identifier** in CEL. The variable is `namespaceObject`, which
+  is what `ValidatingAdmissionPolicy` calls it for the same reason.
+- `ResourceList` binds as a map, so `'memory' in container.resources.limits` works without
+  touching `resource.Quantity`, whose fields are unexported.
+- `exists()` short-circuits, which matters when reasoning about cost.
+
+## E3 — a broken check is visible, not silent
+
+In envtest:
+
+| Spec | Asserts |
+|---|---|
+| a check that compiles | `Ready=True`, reason `Compiled` |
+| a check that does not | `Ready=False`, reason `CompileFailed`, message contains `undefined field 'labals'` |
+| a broken check alongside good ones | the report still contains KG-011, so one bad policy does not stop the scan |
+
+Compile failures are cached alongside successes in `policy.Registry`, so a check with a
+typo is not recompiled on every scan of every namespace.
+
+Unit tests cover the rest: an expression naming a variable from another scope is rejected,
+a `violation` that does not evaluate to a bool is rejected, an unterminated `${` is
+rejected, and the error names which field was at fault.
+
+## E4 — the cost budget stops a quadratic expression
+
+Checks come from whoever runs the cluster rather than being compiled in, so evaluation is
+capped. A quadratic walk over 600 workloads, written so `exists()` cannot short-circuit,
+is stopped:
+
+```
+workloads.exists(a, workloads.exists(b, a.name == b.name + 'never'))
+=> check TEST-1 violation: operation cancelled: actual cost limit exceeded
+```
+
+## E5 — what CEL costs
+
+Measured in `internal/policy/bench_test.go`, nine checks over one namespace:
+
+```
+                    time       allocated    allocations
+10 workloads       0.83 ms      0.84 MB          7,974
+100 workloads      6.96 ms      7.95 MB         75,076
+1000 workloads    66.83 ms     79.15 MB        747,263
+
+compiling all nine   5.16 ms     4.86 MB         80,768
+```
+
+Against the Go checks these replaced — 2.25 ms and 6.5 MB at a thousand workloads — CEL
+is about **thirty times slower and twelve times heavier**. That is the honest price of
+moving rules into configuration, and it is worth stating plainly rather than burying.
+
+It is also mostly irrelevant at real sizes. The largest namespace on the Hamravesh cluster
+holds seventeen workloads, which puts a scan near a millisecond, well under the etcd status
+write and the two Trivy API calls that happen on every reconcile regardless. The
+thousand-workload figure is a pathological case that no namespace here approaches.
+
+Compilation is the expensive part, at 5 ms for all nine, which is why `policy.Registry`
+caches by name and generation. Compiling per scan rather than per edit would have cost more
+than the evaluation it enables.
+
+One structural fix came out of this benchmark: `policy.Context` now holds the variables
+shared by every check in a scan and caches the subject list per scope, so nine checks do not
+flatten the same thousand workloads nine times over.
+
+## E6 — envtest needed a ServiceAccount it does not create
+
+The demo spec lost KG-012 after the migration, and the cause was the test environment
+rather than the policy. envtest runs `kube-apiserver` and etcd but no
+`kube-controller-manager`, so the `default` ServiceAccount that every real namespace has is
+absent, and a ServiceAccount-scoped check has nothing to evaluate. The suite now creates it
+explicitly.
+
+This is a genuine behaviour change worth recording: with KG-012 scoped to the
+ServiceAccount, a namespace with no `default` ServiceAccount object produces no KG-012
+finding, where the Go check would have emitted one. No real namespace is in that state.
+
+## E7 — cluster deployment
+
+**Not yet done.** Docker was not running when this round was written, so `v0.8.0` has not
+been built, pushed or deployed, and the confirmations that matter on a live cluster are
+still outstanding:
+
+- every namespace reporting the same findings as it does under `v0.7.0`
+- both `ScanException`s still suppressing, since they match on `id`, which is unchanged
+- editing a `SecurityCheck` rescanning the manifest reports
+- a deliberately broken `SecurityCheck` showing `Ready=False` without disturbing the rest

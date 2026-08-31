@@ -5,6 +5,7 @@ resources:
 - bases/security.kubeguardian.io_manifestsecurityreports.yaml
 - bases/security.kubeguardian.io_imagesecurityreports.yaml
 - bases/security.kubeguardian.io_scanexceptions.yaml
+- bases/security.kubeguardian.io_securitychecks.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

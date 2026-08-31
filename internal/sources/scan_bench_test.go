@@ -12,7 +12,6 @@ import (
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
 	"github.com/sadegh-msm/kubeguardian/internal/snapshot"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
-	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/podsecurity"
 )
 
@@ -47,7 +46,7 @@ func benchScan(b *testing.B, n int) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	all := []sources.Source{builtin.NewEngine(), ps}
+	all := []sources.Source{ps}
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -70,17 +69,6 @@ func BenchmarkScan10(b *testing.B)   { benchScan(b, 10) }
 func BenchmarkScan100(b *testing.B)  { benchScan(b, 100) }
 func BenchmarkScan1000(b *testing.B) { benchScan(b, 1000) }
 
-func BenchmarkBuiltin1000(b *testing.B) {
-	snap := benchSnapshot(1000)
-	e := builtin.NewEngine()
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := e.Collect(context.Background(), snap); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkPodSecurity1000(b *testing.B) {
 	snap := benchSnapshot(1000)
 	ps, err := podsecurity.New()
@@ -99,8 +87,6 @@ func BenchmarkNormalize1000(b *testing.B) {
 	snap := benchSnapshot(1000)
 	ps, _ := podsecurity.New()
 	raw, _ := ps.Collect(context.Background(), snap)
-	more, _ := builtin.NewEngine().Collect(context.Background(), snap)
-	raw = append(raw, more...)
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = sources.Normalize(raw, securityv1alpha1.SeverityLow)

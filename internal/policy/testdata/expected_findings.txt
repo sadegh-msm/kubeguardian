@@ -1,0 +1,148 @@
+### fixture 0
+KG-007
+  Medium
+  PodSecurity
+  Deployment/legacy:api
+  container "api" has a writable root filesystem, letting an attacker drop tooling or modify binaries inside the running container
+  Set securityContext.readOnlyRootFilesystem to true and mount an emptyDir over any directory the process must write to, such as /tmp.
+  kubectl patch deployment legacy -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/securityContext/readOnlyRootFilesystem","value":true}]'
+  https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+---
+KG-007
+  Medium
+  PodSecurity
+  Deployment/legacy:sidecar
+  container "sidecar" has a writable root filesystem, letting an attacker drop tooling or modify binaries inside the running container
+  Set securityContext.readOnlyRootFilesystem to true and mount an emptyDir over any directory the process must write to, such as /tmp.
+  kubectl patch deployment legacy -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/1/securityContext/readOnlyRootFilesystem","value":true}]'
+  https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+---
+KG-010
+  High
+  Network
+  Namespace/demo
+  namespace "demo" has no default-deny ingress NetworkPolicy, so every pod in the cluster can reach every pod here
+  Apply a default-deny ingress policy, then add explicit allow policies for the traffic each workload actually serves.
+  apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: demo
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  https://kubernetes.io/docs/concepts/services-networking/network-policies/
+---
+KG-011
+  High
+  Governance
+  Namespace/demo
+  namespace "demo" does not set pod-security.kubernetes.io/enforce, so Pod Security Admission enforces nothing and any pod spec is accepted
+  Label the namespace with a Pod Security Standard. Start at baseline to catch the worst cases, then move to restricted once workloads comply.
+  kubectl label namespace demo pod-security.kubernetes.io/enforce=baseline
+  https://kubernetes.io/docs/concepts/security/pod-security-admission/
+---
+KG-012
+  Medium
+  RBAC
+  ServiceAccount/default
+  the default ServiceAccount automounts an API token into 1 workload(s) (Deployment/legacy) that do not appear to need API access
+  Disable automounting on the default ServiceAccount, and give workloads that do call the API their own ServiceAccount with a scoped Role.
+  kubectl patch serviceaccount default -n demo -p '{"automountServiceAccountToken":false}'
+  https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+---
+KG-013
+  High
+  RBAC
+  Role/legacy
+  Role "legacy" grants a wildcard on apiGroups, resources and verbs, which silently expands as new resources and verbs are added to the cluster
+  Replace each wildcard with the explicit apiGroups, resources and verbs the subject needs. Use kubectl auth can-i --list to confirm nothing breaks.
+  kubectl get role legacy -n demo -o yaml
+  https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+---
+KG-020
+  Medium
+  SupplyChain
+  Deployment/legacy:api
+  container "api" uses image "nginx" with no tag, which resolves to latest and can change between restarts
+  Pin the image to an immutable tag, or better a digest, so every replica runs the artifact you tested.
+  kubectl set image Deployment/legacy api=nginx@sha256:<digest> -n demo
+  https://kubernetes.io/docs/concepts/containers/images/#image-names
+---
+KG-020
+  Medium
+  SupplyChain
+  Deployment/legacy:sidecar
+  container "sidecar" uses the mutable tag latest, so the running image can drift from the reviewed one without any manifest change
+  Pin the image to a release tag or a digest, so rollouts are reproducible and auditable.
+  kubectl set image Deployment/legacy sidecar=registry.example.com:5000/proxy:latest@sha256:<digest> -n demo
+  https://kubernetes.io/docs/concepts/containers/images/#image-names
+---
+KG-021
+  Medium
+  Governance
+  Deployment/legacy:api
+  container "api" is missing memory limit, cpu request and memory request, so it can starve neighbours on the node and makes the namespace a denial-of-service vector
+  Set both requests and limits. Requests drive scheduling and limits cap the blast radius of a runaway process.
+  kubectl patch deployment legacy -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"512Mi"}}}]'
+  https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+---
+KG-021
+  Medium
+  Governance
+  Deployment/legacy:sidecar
+  container "sidecar" is missing memory limit, cpu request and memory request, so it can starve neighbours on the node and makes the namespace a denial-of-service vector
+  Set both requests and limits. Requests drive scheduling and limits cap the blast radius of a runaway process.
+  kubectl patch deployment legacy -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/1/resources","value":{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"512Mi"}}}]'
+  https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+---
+### fixture 1
+### fixture 2
+KG-011
+  High
+  Governance
+  Namespace/demo
+  namespace "demo" enforces the privileged Pod Security Standard, which applies no restrictions at all
+  Raise enforcement to baseline or restricted. privileged is only appropriate for namespaces running node-level infrastructure.
+  kubectl label --overwrite namespace demo pod-security.kubernetes.io/enforce=baseline
+  https://kubernetes.io/docs/concepts/security/pod-security-admission/
+---
+### fixture 3
+KG-007
+  Medium
+  PodSecurity
+  Deployment/api:api
+  container "api" has a writable root filesystem, letting an attacker drop tooling or modify binaries inside the running container
+  Set securityContext.readOnlyRootFilesystem to true and mount an emptyDir over any directory the process must write to, such as /tmp.
+  kubectl patch deployment api -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/securityContext/readOnlyRootFilesystem","value":true}]'
+  https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+---
+KG-013
+  High
+  RBAC
+  Role/reader
+  Role "reader" grants a wildcard on resources, which silently expands as new resources and verbs are added to the cluster
+  Replace each wildcard with the explicit apiGroups, resources and verbs the subject needs. Use kubectl auth can-i --list to confirm nothing breaks.
+  kubectl get role reader -n demo -o yaml
+  https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+---
+KG-020
+  Medium
+  SupplyChain
+  Deployment/api:api
+  container "api" uses image "registry.example.com:5000/app" with no tag, which resolves to latest and can change between restarts
+  Pin the image to an immutable tag, or better a digest, so every replica runs the artifact you tested.
+  kubectl set image Deployment/api api=registry.example.com:5000/app@sha256:<digest> -n demo
+  https://kubernetes.io/docs/concepts/containers/images/#image-names
+---
+KG-021
+  Medium
+  Governance
+  Deployment/api:api
+  container "api" is missing memory limit and memory request, so it can starve neighbours on the node and makes the namespace a denial-of-service vector
+  Set both requests and limits. Requests drive scheduling and limits cap the blast radius of a runaway process.
+  kubectl patch deployment api -n demo --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"512Mi"}}}]'
+  https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+---
+### fixture 4

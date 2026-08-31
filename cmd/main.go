@@ -39,9 +39,10 @@ import (
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
 	"github.com/sadegh-msm/kubeguardian/internal/controller"
+	"github.com/sadegh-msm/kubeguardian/internal/policy"
 	"github.com/sadegh-msm/kubeguardian/internal/sources"
-	"github.com/sadegh-msm/kubeguardian/internal/sources/builtin"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/podsecurity"
+	policysource "github.com/sadegh-msm/kubeguardian/internal/sources/policy"
 	"github.com/sadegh-msm/kubeguardian/internal/sources/trivy"
 	// +kubebuilder:scaffold:imports
 )
@@ -213,6 +214,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// One registry is shared by the source that evaluates checks and the
+	// controller that reports whether they compile, so a check is compiled once
+	// per edit rather than once per scan.
+	registry := policy.NewRegistry()
+
 	trivyAdapter, err := trivy.NewAdapter(restConfig)
 	if err != nil {
 		setupLog.Error(err, "Unable to initialise the Trivy source")
@@ -231,13 +237,22 @@ func main() {
 	if err := (&controller.ManifestSecurityReportReconciler{
 		Scanner: controller.Scanner{
 			Client:      mgr.GetClient(),
-			Sources:     []sources.Source{builtin.NewEngine(), podSecuritySource},
+			Sources:     []sources.Source{policysource.New(mgr.GetClient(), registry), podSecuritySource},
 			MinSeverity: severity,
 			MaxFindings: maxFindings,
 		},
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "manifestsecurityreport")
+		os.Exit(1)
+	}
+
+	if err := (&controller.SecurityCheckReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "securitycheck")
 		os.Exit(1)
 	}
 

@@ -1,0 +1,25 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg013-wildcard-rbac
+spec:
+  id: KG-013
+  severity: High
+  category: RBAC
+  reference: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+  scope: Role
+  bindings:
+    wildcards: >-
+      [ role.rules.exists(r, '*' in r.apiGroups)  ? 'apiGroups' : '',
+        role.rules.exists(r, '*' in r.resources)  ? 'resources' : '',
+        role.rules.exists(r, '*' in r.verbs)      ? 'verbs' : ''
+      ].filter(f, f != '')
+  violation: wildcards.size() > 0
+  message: >-
+    Role "${role.metadata.name}" grants a wildcard on ${joinFields(wildcards)}, which
+    silently expands as new resources and verbs are added to the cluster
+  suggestion: >-
+    Replace each wildcard with the explicit apiGroups, resources and verbs the subject
+    needs. Use kubectl auth can-i --list to confirm nothing breaks.
+  remediation: >-
+    kubectl get role ${role.metadata.name} -n ${namespaceObject.metadata.name} -o yaml

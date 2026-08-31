@@ -28,4 +28,7 @@ resources:
 - imagesecurityreport_admin_role.yaml
 - imagesecurityreport_editor_role.yaml
 - imagesecurityreport_viewer_role.yaml
+- securitycheck_admin_role.yaml
+- securitycheck_editor_role.yaml
+- securitycheck_viewer_role.yaml
 

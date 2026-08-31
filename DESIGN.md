@@ -18,9 +18,10 @@ What is built:
 - Two namespaced report CRDs, `ManifestSecurityReport` and `ImageSecurityReport`, so the
   two questions can be asked and answered separately
 - A controller per kind, watching the workloads each one actually reads
-- Seven hand-written checks across network, RBAC, supply chain and governance, plus the
-  upstream Pod Security Standards evaluator
-- A `Source` seam with three implementations: the built-in engine, the Pod Security
+- Seven checks across network, RBAC, supply chain and governance, expressed as CEL in
+  `SecurityCheck` objects rather than in Go, plus the upstream Pod Security Standards
+  evaluator
+- A `Source` seam with three implementations: the CEL policy evaluator, the Pod Security
   Standards evaluator and a Trivy adapter
 - A `ScanException` CRD for recording accepted risks without hiding them
 - Unit tests per check, and integration tests against a real API server via envtest
@@ -328,30 +329,77 @@ sort, map iteration order alone would make every scan look like a change.
 
 ## The check engine
 
-A check is a pure function from a namespace snapshot to findings:
-
-```go
-type Check interface {
-	ID() string
-	Severity() securityv1alpha1.Severity
-	Category() securityv1alpha1.Category
-	Run(snap *snapshot.Snapshot) []securityv1alpha1.Finding
-}
-```
-
-Purity is the point. Checks touch no client and no context, so their tests need no
-cluster, run in milliseconds, and cover edge cases that would be tedious to stage against
-a real API server.
-
-Shared metadata lives in an embedded `meta` struct, so each rule file contains only its
-logic and its remediation text, and no rule can accidentally emit a finding with a
-mismatched severity or a missing reference.
+A check is a pure function from a namespace snapshot to findings. It is now spelled as
+expressions rather than as Go, but the shape is unchanged: no client, no context, nothing
+but the snapshot in and findings out. That is why the tests need no cluster and why one
+`Snapshot` can be shared across every check in a scan.
 
 `snapshot.Collect` gathers every relevant object in the namespace in one pass using the
 manager's cache, and `Snapshot.Workloads()` flattens Deployments, StatefulSets, DaemonSets
 and CronJobs into a single `Workload` type holding a pod template. That flattening is why
-a rule is roughly fifteen lines and automatically covers four workload kinds and their
-init containers.
+one expression covers four workload kinds and their init containers without saying so.
+
+`internal/policy` turns a `SecurityCheck` into programs and runs them:
+
+- `newEnv(scope)` builds the CEL environment. Kubernetes structs are bound natively through
+  `ext.NativeTypes` with `ext.ParseStructTag("json")`, so an expression reads
+  `container.securityContext.readOnlyRootFilesystem` rather than a Go field name, nested
+  types resolve on their own, and a nil pointer reads as the zero value instead of erroring.
+- `Compile` type checks every expression against that environment. Because CEL is typed, a
+  misspelt field is caught when the object is applied rather than when a namespace happens
+  to exercise that branch.
+- `Context` holds the variables shared by every check in one scan and caches the subject
+  list per scope, so nine checks do not flatten a thousand workloads nine times over.
+- `Registry` caches compiled programs by name and generation, including failures, so a
+  check with a typo is not recompiled on every scan of every namespace.
+
+### Checks are configuration, not code
+
+The seven rules that remained after the pod-security move are now `SecurityCheck` objects
+holding CEL expressions, shipped under `config/policies/`. `internal/checks` and
+`internal/sources/builtin` are gone.
+
+**This reverses a decision this document used to record.** *Deliberately out of scope* had
+an entry reading "a policy engine of our own ... is Kyverno rewritten badly", and that
+reasoning was sound for what it described: a general engine, in a project that would then
+own the security knowledge anyway. Two things changed it. The pod-security migration moved
+the security knowledge upstream, so what was left was seven small declarative predicates
+rather than a body of expertise. And `github.com/google/cel-go` turned out to be already
+linked into the binary as an indirect dependency of `k8s.io/apiserver`, so the engine costs
+no new module — `internal/policy` is a few hundred lines of environment construction and
+evaluation, not a project.
+
+**Why CEL rather than Rego.** Rego is the more expressive language and OPA the more
+established ecosystem, and for a general-purpose policy system it would be the better
+answer. Here it would add a large dependency tree to a 77 MB image, a second language for
+whoever writes rules, and a weaker sandbox. CEL is what Kubernetes itself uses for
+`ValidatingAdmissionPolicy` and CRD validation rules, so anyone operating the cluster has
+likely already written some, and it is non-Turing-complete with an enforceable cost
+budget. That last property is what makes it safe to evaluate expressions the operator did
+not compile.
+
+**What that costs.** CEL evaluation is roughly thirty times slower than the equivalent Go,
+measured in `internal/policy/bench_test.go`: about 67 ms and 79 MB for the nine checks over
+a thousand-workload namespace, against 2.25 ms and 6.5 MB for the Go checks they replaced.
+That sounds worse than it is. A namespace on the Hamravesh cluster holds seventeen
+workloads, which puts a real scan near a millisecond, well below the etcd status write and
+the two Trivy API calls that happen regardless. Compilation, at about 5 ms for all nine, is
+the expensive part, which is why `policy.Registry` caches it by generation rather than
+compiling per scan.
+
+**Where the line sits.** `Container` scope exposes `imageTag`, `imageDigest` and
+`containerIndex`, computed in Go. They exist because splitting an image reference is fiddly
+enough to be worth doing once — `registry:5000/app` is untagged, `registry:5000/app:2.0` is
+not — and because a `kubectl patch` remediation needs an index. They are parsing
+primitives. A derived value that encoded a judgement would move the rule back into the code
+and leave a YAML wrapper pretending otherwise, and it is worth refusing the first one.
+
+**Failure is visible rather than silent.** A check that does not compile produces no
+findings, and the `SecurityCheck` controller writes the CEL error onto its own `Ready`
+condition. The scan skips it and logs, rather than failing every report in the cluster
+because one policy has a typo. A check that errors at *evaluation* time does fail the scan,
+because CEL catches type errors at compile time, so a runtime error means something the
+author could not have anticipated and should not be swallowed.
 
 ### What is written here and what is not
 
@@ -375,7 +423,8 @@ Admission. Three things follow from that:
 - The library is on the same release train as `k8s.io/api`, so tracking a Kubernetes minor
   version updates the security logic as a side effect of an ordinary dependency bump.
 
-The seven rules that remain are the ones with no upstream owner: `readOnlyRootFilesystem`,
+The seven rules that remain are the ones with no upstream owner, and they are now
+`SecurityCheck` objects rather than Go: `readOnlyRootFilesystem`,
 which is common hardening advice but is not part of any Pod Security Standard level, and
 the six namespace and governance checks — NetworkPolicy, Pod Security Admission labels,
 default ServiceAccount tokens, wildcard RBAC, mutable image tags and resource limits.
@@ -413,6 +462,7 @@ into the same report. Every finding records which source produced it.
 Two more sources are now built, and neither required a change to the seam or to the
 controller, which is the useful evidence that it was drawn in the right place.
 
+`internal/sources/policy` evaluates the `SecurityCheck` objects in the cluster.
 `internal/sources/podsecurity` wraps the upstream Pod Security Standards evaluator.
 `internal/sources/trivy` reads the `VulnerabilityReport` and `ExposedSecretReport`
 resources that trivy-operator writes.
@@ -533,15 +583,15 @@ reliable output matters more. These were cut on purpose.
   Falco can all emit to. One adapter against that standard would pick up every such tool
   through a single vendor-neutral interface, and would fit the existing `Source` seam. It
   is the natural next extension, left out because Trivy was the integration asked for.
-- **A policy engine of our own.** A `SecurityCheck` CRD holding CEL expressions would turn
-  new rules into YAML instead of Go, and platform teams could add their own. It is also
-  Kyverno rewritten badly: the security knowledge would stay ours to maintain, which is
-  the cost the pod-security-admission move was made to avoid.
 - **Kyverno or OPA Gatekeeper as the engine.** Both have large curated policy libraries and
   both background-scan existing resources. Both are also an additional admission controller
   and webhook on the platform, which is a large operational commitment for a reporting
-  tool. `k8s.io/pod-security-admission` delivers the pod-security half as a Go import, with
-  no new cluster dependency at all.
+  tool. The `SecurityCheck` CRD covers the same ground for this operator's purposes without
+  putting anything new in the cluster.
+- **Embedding OPA to evaluate Rego.** Rego is more expressive than CEL, particularly for
+  joins, and has a large body of existing policy. It also adds a substantial dependency
+  tree to a 77 MB image, is a separate language to learn, evaluates more slowly, and is
+  harder to sandbox. CEL was already linked into the binary; see the CEL section above.
 - **Cross-namespace and cluster-scoped RBAC analysis.** ClusterRoleBindings that grant
   namespace access from outside are a real gap, and closing it properly needs a
   cluster-wide binding graph rather than a per-namespace snapshot. That is a different
@@ -560,6 +610,8 @@ reliable output matters more. These were cut on purpose.
   `resource.container` empty, because `policy.CheckResult` reports a violated control
   rather than a path into the pod spec. The container name appears in the message instead,
   and the remediation is a YAML snippet rather than a `kubectl patch` command.
+- Evaluating CEL costs about thirty times what the equivalent Go did. It is immaterial at
+  real namespace sizes and measurable at a thousand workloads; see the check engine section.
 - A `ManifestSecurityReport` has no periodic rescan, so a finding that depends on state
   nothing watches would go stale. Today none does: every object its checks read is watched,
   and the one time-dependent input, `ScanException` expiry, is requeued on its deadline. A

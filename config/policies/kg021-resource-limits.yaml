@@ -1,0 +1,27 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg021-resource-limits
+spec:
+  id: KG-021
+  severity: Medium
+  category: Governance
+  reference: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+  scope: Container
+  bindings:
+    missing: >-
+      [ 'memory' in container.resources.limits   ? '' : 'memory limit',
+        'cpu'    in container.resources.requests ? '' : 'cpu request',
+        'memory' in container.resources.requests ? '' : 'memory request'
+      ].filter(f, f != '')
+  violation: missing.size() > 0
+  message: >-
+    container "${container.name}" is missing ${joinFields(missing)}, so it can starve
+    neighbours on the node and makes the namespace a denial-of-service vector
+  suggestion: >-
+    Set both requests and limits. Requests drive scheduling and limits cap the blast radius
+    of a runaway process.
+  remediation: >-
+    kubectl patch ${workload.kind.lowerAscii()} ${workload.name} -n
+    ${namespaceObject.metadata.name} --type=json
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/${containerIndex}/resources","value":{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"512Mi"}}}]'

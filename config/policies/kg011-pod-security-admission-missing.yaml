@@ -1,0 +1,21 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg011-pod-security-admission-missing
+spec:
+  id: KG-011
+  severity: High
+  category: Governance
+  reference: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+  scope: Namespace
+  violation: "!('pod-security.kubernetes.io/enforce' in namespaceObject.metadata.labels)"
+  message: >-
+    namespace "${namespaceObject.metadata.name}" does not set
+    pod-security.kubernetes.io/enforce, so Pod Security Admission enforces nothing and any
+    pod spec is accepted
+  suggestion: >-
+    Label the namespace with a Pod Security Standard. Start at baseline to catch the worst
+    cases, then move to restricted once workloads comply.
+  remediation: >-
+    kubectl label namespace ${namespaceObject.metadata.name}
+    pod-security.kubernetes.io/enforce=baseline

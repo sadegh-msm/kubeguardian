@@ -1,0 +1,22 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg011-pod-security-admission-privileged
+spec:
+  id: KG-011
+  severity: High
+  category: Governance
+  reference: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+  scope: Namespace
+  violation: >-
+    'pod-security.kubernetes.io/enforce' in namespaceObject.metadata.labels &&
+    namespaceObject.metadata.labels['pod-security.kubernetes.io/enforce'] == 'privileged'
+  message: >-
+    namespace "${namespaceObject.metadata.name}" enforces the privileged Pod Security
+    Standard, which applies no restrictions at all
+  suggestion: >-
+    Raise enforcement to baseline or restricted. privileged is only appropriate for
+    namespaces running node-level infrastructure.
+  remediation: >-
+    kubectl label --overwrite namespace ${namespaceObject.metadata.name}
+    pod-security.kubernetes.io/enforce=baseline

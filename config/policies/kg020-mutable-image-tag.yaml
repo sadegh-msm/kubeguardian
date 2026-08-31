@@ -1,0 +1,19 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg020-mutable-image-tag
+spec:
+  id: KG-020
+  severity: Medium
+  category: SupplyChain
+  reference: https://kubernetes.io/docs/concepts/containers/images/#image-names
+  scope: Container
+  violation: "imageDigest == '' && imageTag == 'latest'"
+  message: >-
+    container "${container.name}" uses the mutable tag latest, so the running image can
+    drift from the reviewed one without any manifest change
+  suggestion: >-
+    Pin the image to a release tag or a digest, so rollouts are reproducible and auditable.
+  remediation: >-
+    kubectl set image ${workload.kind}/${workload.name}
+    ${container.name}=${container.image}@sha256:<digest> -n ${namespaceObject.metadata.name}

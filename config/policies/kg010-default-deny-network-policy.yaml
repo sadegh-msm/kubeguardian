@@ -1,0 +1,33 @@
+apiVersion: security.kubeguardian.io/v1alpha1
+kind: SecurityCheck
+metadata:
+  name: kg010-default-deny-network-policy
+spec:
+  id: KG-010
+  severity: High
+  category: Network
+  reference: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+  scope: Namespace
+  violation: >-
+    workloads.size() > 0 &&
+    !networkPolicies.exists(p,
+      p.spec.podSelector.matchLabels.size() == 0 &&
+      p.spec.podSelector.matchExpressions.size() == 0 &&
+      p.spec.ingress.size() == 0 &&
+      p.spec.policyTypes.exists(t, t == 'Ingress'))
+  message: >-
+    namespace "${namespaceObject.metadata.name}" has no default-deny ingress NetworkPolicy,
+    so every pod in the cluster can reach every pod here
+  suggestion: >-
+    Apply a default-deny ingress policy, then add explicit allow policies for the traffic
+    each workload actually serves.
+  remediation: |-
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: default-deny-ingress
+      namespace: ${namespaceObject.metadata.name}
+    spec:
+      podSelector: {}
+      policyTypes:
+        - Ingress
