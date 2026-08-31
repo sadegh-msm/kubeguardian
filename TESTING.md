@@ -6,7 +6,7 @@ Three layers, each answering a different question.
 |---|---|---|---|
 | Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
 | Integration | Do the controllers behave against a real API server? | envtest control plane, both managers started | 12 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus nine later rounds, all pass |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus ten later rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -1259,3 +1259,113 @@ The manager reports no errors and no RBAC denials, and sits at 10m CPU and 41 Mi
 is 77.4 MB against v0.7.0's 77.2 MB: **the entire CEL engine cost 0.2 MB**, because cel-go
 was already linked in through `k8s.io/apiserver`. That was the argument for choosing it
 over Rego, and it is now measured rather than asserted.
+
+---
+
+# Tenth round: scalability
+
+The operator was assessed against a KaaS cluster with thousands of namespaces rather than
+the fourteen it runs on. Three things were wrong rather than merely improvable.
+
+## S1 — the memory limit would have OOMKilled
+
+`config/manager/manager.yaml` still carried kubebuilder's scaffold default of **128 Mi**.
+Nothing had ever pushed on it, because the operator sits at 25 Mi here.
+
+Measured, then extrapolated to 2000 namespaces at the same density:
+
+```
+                        today (14 ns)     at 2000 ns
+watched objects              204            ~29,000
+raw object JSON             280 KB           ~41 MB
+reports                       22             ~4,000
+report JSON                 184 KB    ~33 MB typical, 640 MB worst case
+resident memory              25 Mi     past the 128 Mi limit
+```
+
+Go's in-memory representation runs several times the JSON size, and `--max-findings`
+allows a single report to reach roughly 160 KB. The limit is now 512 Mi with a 256 Mi
+request, and README gains a sizing rule — `100 Mi + 10 Ki per watched object + 25 Ki per
+report` — so the number is derived rather than copied from a scaffold.
+
+This is the only one of the three where the failure mode was "does not run".
+
+## S2 — one exception edit rescanned every report in the cluster
+
+`allReports` enqueued every report of both kinds for any `ScanException` event, however
+narrowly the exception was scoped. Both exceptions on this cluster name a single namespace.
+
+A `ScanException` naming its namespaces now maps only to reports in them. One with a
+`namespaceSelector`, or with no namespaces at all, still fans out, because resolving the
+selector is the work the fan-out would have done anyway. `SecurityCheck` keeps the full
+fan-out, which is correct — a policy applies everywhere.
+
+Verified on the cluster. Before, every report shared one `lastScanTime`, the signature of
+the stampede:
+
+```
+all 11 reports   2026-08-31T11:21:42Z
+```
+
+After, applying an exception scoped to `hamlb-system` and then deleting it:
+
+```
+applied  -> hamlb-system 14:15:43   (10 others unchanged)
+deleted  -> hamlb-system 14:16:54   (10 others unchanged)
+```
+
+Eleven reconciles became one, each way. At 2000 namespaces that is 4000 becoming 2.
+
+## S3 — the cache held fields nothing reads
+
+`status` was 9.3% of watched-object bytes and no check consults any of it. The
+`last-applied-configuration` annotation is a second copy of the whole object.
+`internal/controller/cache.go` now strips both from the eight watched workload and
+namespace types, alongside the `managedFields` stripping that was already there.
+
+Report types are deliberately excluded. `Scanner.updateStatus` reads a report's status back
+through the cache inside its conflict-retry loop, so stripping status there would break
+writing a report rather than save anything. A unit test asserts both halves: workload
+status is cleared, report status survives, and no report type appears in `ByObject`.
+
+**The saving is not observable at this size**, and that is worth stating rather than
+implying otherwise. Memory settled at 24 Mi against 25 Mi before — 9% of 280 KB is 25 KB,
+which is noise. The change is kept because the cache is cluster-wide by necessity and the
+saving is proportional to cluster size, not because anything here got measurably smaller.
+
+Memory reads 52 Mi in the first minute after a rollout, before the cache has finished
+filling and the first GC has run, so only the settled figure means anything. That is the
+same pattern recorded in the sixth round.
+
+## S4 — dead code the linter could not see
+
+`internal/controller/mapping.go` held `mapToNamespace`, which maps a workload to a
+cluster-scoped report named after its namespace — the model that was replaced in the fourth
+round. Nothing in production had called it since. `unused` never flagged it because
+`mapping_test.go` exercised it, so the test kept the dead function alive and the dead
+function justified the test. Both are gone.
+
+Worth remembering as a limitation of the tooling rather than a one-off: a function used
+only by its own test is invisible to `unused`.
+
+## S5 — nothing else changed
+
+All 194 findings match the baseline captured from the Go checks under `v0.7.0`, through
+both the cache transform and the fan-out narrowing. Both `ScanException` objects still
+suppress. No errors and no RBAC denials in the log.
+
+## What was deliberately left
+
+- **Two replicas.** Leader election is configured and `replicas: 1`, so the machinery has
+  nothing to fail over to. A single-replica outage is a scanning gap, not a correctness
+  problem.
+- **Domain metrics.** Scan duration, findings by severity, and a counter for checks skipped
+  because they no longer compile. The last is a real gap: a policy that stops compiling is
+  visible today only on its own object.
+- **Shrinking findings.** `suggestion` and `reference` are per-check constants copied onto
+  every finding, 35% of finding bytes across 228 live findings, and both already live on
+  the `SecurityCheck`. Rejected deliberately: a finding you can read on its own and act on
+  is most of why the reports are useful.
+- **Sharding.** The ceiling, recorded in DESIGN.md. The cache is cluster-wide by necessity
+  because a report can appear in any namespace and a cache's namespace set is fixed at
+  startup.

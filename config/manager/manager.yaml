@@ -92,13 +92,18 @@ spec:
           periodSeconds: 10
         # TODO(user): Configure the resources accordingly based on the project requirements.
         # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # The cache is cluster-wide and holds every workload, ServiceAccount, Role
+        # and NetworkPolicy plus every report, so memory scales with the cluster
+        # rather than with load. These defaults suit a few hundred namespaces.
+        # See "Sizing the manager" in README.md before running this somewhere
+        # larger; the kubebuilder default of 128Mi will not survive one.
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: "1"
+            memory: 512Mi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 100m
+            memory: 256Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager

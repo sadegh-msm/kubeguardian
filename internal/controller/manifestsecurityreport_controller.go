@@ -89,6 +89,10 @@ func (r *ManifestSecurityReportReconciler) reportsForNamespace(ctx context.Conte
 	return r.reportsIn(ctx, obj.GetName())
 }
 
+func (r *ManifestSecurityReportReconciler) reportsForException(ctx context.Context, obj client.Object) []reconcile.Request {
+	return requestsForException(ctx, obj, r.reportsIn, r.allReports)
+}
+
 func (r *ManifestSecurityReportReconciler) allReports(ctx context.Context, _ client.Object) []reconcile.Request {
 	var reports securityv1alpha1.ManifestSecurityReportList
 	if err := r.List(ctx, &reports); err != nil {
@@ -113,7 +117,7 @@ func (r *ManifestSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) er
 		Watches(&networkingv1.NetworkPolicy{}, toReports).
 		Watches(&rbacv1.Role{}, toReports).
 		Watches(&corev1.ServiceAccount{}, toReports).
-		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.allReports)).
+		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.reportsForException)).
 		Watches(&securityv1alpha1.SecurityCheck{}, handler.EnqueueRequestsFromMapFunc(r.allReports)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Named("manifestsecurityreport").

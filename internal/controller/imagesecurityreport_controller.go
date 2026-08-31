@@ -98,6 +98,10 @@ func (r *ImageSecurityReportReconciler) reportsForNamespace(ctx context.Context,
 	return r.reportsIn(ctx, obj.GetName())
 }
 
+func (r *ImageSecurityReportReconciler) reportsForException(ctx context.Context, obj client.Object) []reconcile.Request {
+	return requestsForException(ctx, obj, r.reportsIn, r.allReports)
+}
+
 func (r *ImageSecurityReportReconciler) allReports(ctx context.Context, _ client.Object) []reconcile.Request {
 	var reports securityv1alpha1.ImageSecurityReportList
 	if err := r.List(ctx, &reports); err != nil {
@@ -127,7 +131,7 @@ func (r *ImageSecurityReportReconciler) SetupWithManager(mgr ctrl.Manager) error
 		Watches(&appsv1.StatefulSet{}, toReports, workloadPredicate).
 		Watches(&appsv1.DaemonSet{}, toReports, workloadPredicate).
 		Watches(&batchv1.CronJob{}, toReports, workloadPredicate).
-		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.allReports)).
+		Watches(&securityv1alpha1.ScanException{}, handler.EnqueueRequestsFromMapFunc(r.reportsForException)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Named("imagesecurityreport").
 		Complete(r)

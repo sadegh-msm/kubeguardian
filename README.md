@@ -222,6 +222,35 @@ against the old report keeps suppressing the same finding in whichever kind it n
 `NamespaceSecurityReport` was also cluster-scoped before v0.4.0. If you are coming from
 that far back, deleting the CRD as above covers both changes at once.
 
+## Sizing the manager
+
+The cache is cluster-wide and has to be: a report can appear in any namespace at any time,
+and controller-runtime fixes a cache's namespace set at startup. So memory scales with the
+size of the cluster rather than with how much scanning you ask for, and it is the
+constraint to plan around.
+
+Measured on a 14-namespace cluster: 204 watched objects at about 1.4 KB of JSON each, 22
+reports at about 8.4 KB each, 25 Mi resident. As a rule of thumb, budget
+
+```
+100 Mi  +  10 Ki per watched object  +  25 Ki per report
+```
+
+where watched objects are the Deployments, StatefulSets, DaemonSets, CronJobs,
+NetworkPolicies, ServiceAccounts, Roles and Namespaces in the whole cluster, and reports
+are the `ManifestSecurityReport` and `ImageSecurityReport` objects you have created. The
+multipliers are well above the JSON sizes because Go's in-memory representation is several
+times larger and because `--max-findings` allows a report to grow to roughly 160 KB.
+
+The shipped defaults are 512 Mi limit and 256 Mi request, which suit a few hundred
+namespaces. **The kubebuilder default of 128 Mi will not survive a cluster with thousands**,
+which is why it is not what ships.
+
+Two things reduce the footprint without any configuration. The cache strips `managedFields`
+from everything it holds, and strips `status` and the `last-applied-configuration`
+annotation from watched workload objects, none of which any check reads. Reports are left
+whole, because writing one reads its own status back through the cache.
+
 ## Configuration
 
 The controller is configured with flags on the manager binary.

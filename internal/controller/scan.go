@@ -248,6 +248,32 @@ func distinctSeverities(summary securityv1alpha1.SeveritySummary) int {
 	return count
 }
 
+// requestsForException maps a ScanException to the reports it can actually
+// change. An exception that names its namespaces cannot affect a report anywhere
+// else, and enqueueing every report in the cluster for one kubectl apply is a
+// stampede on a cluster with many namespaces.
+//
+// Anything less specific still fans out: no namespaces at all means it matches
+// everywhere, and a namespaceSelector would have to be resolved against every
+// namespace to know, which is the work the fan-out was going to do anyway.
+func requestsForException(
+	ctx context.Context,
+	obj client.Object,
+	inNamespace func(context.Context, string) []reconcile.Request,
+	everywhere func(context.Context, client.Object) []reconcile.Request,
+) []reconcile.Request {
+	exception, ok := obj.(*securityv1alpha1.ScanException)
+	if !ok || exception.Spec.NamespaceSelector != nil || len(exception.Spec.Namespaces) == 0 {
+		return everywhere(ctx, obj)
+	}
+
+	var requests []reconcile.Request
+	for _, namespace := range exception.Spec.Namespaces {
+		requests = append(requests, inNamespace(ctx, namespace)...)
+	}
+	return requests
+}
+
 // requestsFor turns the items of either report list into reconcile requests. The
 // type parameter is what lets one function serve both kinds; the two lists have
 // no common element type.

@@ -597,6 +597,37 @@ reliable output matters more. These were cut on purpose.
   cluster-wide binding graph rather than a per-namespace snapshot. That is a different
   shape of problem and deserves its own scope.
 
+## The scaling ceiling
+
+The operator scales vertically only, and it is worth naming where that ends rather than
+discovering it.
+
+**The cache is cluster-wide by necessity.** A report can be created in any namespace at any
+time, and controller-runtime fixes a cache's namespace set when the manager starts. So the
+operator holds every Deployment, ServiceAccount, Role and NetworkPolicy in the cluster,
+including in namespaces nobody asked to audit. Memory therefore tracks cluster size rather
+than scanning load, which is the opposite of what the opt-in report model suggests.
+
+Two mitigations are in `internal/controller/cache.go`, both of them shaving rather than
+solving: `managedFields` is stripped from everything, and `status` plus the
+`last-applied-configuration` annotation are stripped from watched workload types. Status
+alone is around a tenth of the bytes and no check reads any of it. Report types are
+deliberately excluded, because `Scanner.updateStatus` reads a report's status back through
+the cache inside its conflict-retry loop.
+
+**Fan-out is bounded where it can be.** A `ScanException` that names its namespaces wakes
+only the reports in them; one with a `namespaceSelector`, or none at all, still wakes
+everything, because resolving the selector is the work the fan-out would have done. A
+`SecurityCheck` edit wakes every report, which is correct — a policy applies everywhere.
+
+**Beyond that, the answer is sharding, and it is not available.** Running one operator per
+slice of namespaces would need each to cache only its slice, which the fixed-at-startup
+namespace set almost supports — except that reports appear at any time, so a new namespace
+outside every shard's set would never be scanned. Making that work needs either a
+convention that namespaces are labelled for a shard before a report is created, or a
+restart when the assignment changes. Neither is free, and neither is needed at the size
+this runs at today.
+
 ## Known limitations
 
 - Checks read workload specs, not running pods. A pod created directly, or mutated after
