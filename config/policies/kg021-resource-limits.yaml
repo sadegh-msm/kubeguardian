@@ -9,10 +9,13 @@ spec:
   reference: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
   scope: Container
   bindings:
+    # A quantity of zero is not a limit. Testing presence alone would pass a
+    # container that sets every field to "0", which is how one on this cluster
+    # was written.
     missing: >-
-      [ 'memory' in container.resources.limits   ? '' : 'memory limit',
-        'cpu'    in container.resources.requests ? '' : 'cpu request',
-        'memory' in container.resources.requests ? '' : 'memory request'
+      [ 'memory' in limits   && quantity(limits['memory']).isGreaterThan(quantity('0'))   ? '' : 'memory limit',
+        'cpu'    in requests && quantity(requests['cpu']).isGreaterThan(quantity('0'))    ? '' : 'cpu request',
+        'memory' in requests && quantity(requests['memory']).isGreaterThan(quantity('0')) ? '' : 'memory request'
       ].filter(f, f != '')
   violation: missing.size() > 0
   message: >-

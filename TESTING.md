@@ -6,7 +6,7 @@ Three layers, each answering a different question.
 |---|---|---|---|
 | Unit | Does each rule decide correctly? | Pure functions over in-memory snapshots | 39 test functions, all pass |
 | Integration | Do the controllers behave against a real API server? | envtest control plane, both managers started | 12 specs, all pass |
-| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus eight later rounds; the ninth is pending a deploy |
+| Acceptance | Does the built image work in a real cluster? | Hamravesh platform cluster | 26 scenarios plus nine later rounds, all pass |
 
 Reproduce layers one and two with `make test`, and layer three with the commands in each
 scenario below.
@@ -1171,13 +1171,91 @@ This is a genuine behaviour change worth recording: with KG-012 scoped to the
 ServiceAccount, a namespace with no `default` ServiceAccount object produces no KG-012
 finding, where the Go check would have emitted one. No real namespace is in that state.
 
-## E7 — cluster deployment
+## E7 — the live cluster found the case the fixtures missed
 
-**Not yet done.** Docker was not running when this round was written, so `v0.8.0` has not
-been built, pushed or deployed, and the confirmations that matter on a live cluster are
-still outstanding:
+`v0.8.0` deployed to the Hamravesh cluster, and all nine checks compiled `Ready=True`.
+Comparing all 194 manifest findings against the baseline captured from `v0.7.0` found
+exactly one difference:
 
-- every namespace reporting the same findings as it does under `v0.7.0`
-- both `ScanException`s still suppressing, since they match on `id`, which is unchanged
-- editing a `SecurityCheck` rescanning the manifest reports
-- a deliberately broken `SecurityCheck` showing `Ready=False` without disturbing the rest
+```
+- monitoring-system KG-021 Medium Deployment/uptime-nginx:nginx | container "nginx" is
+  missing memory limit, cpu request and memory request
+```
+
+The container is written like this:
+
+```json
+"resources": {"limits": {"cpu": "0", "memory": "0"}, "requests": {"cpu": "0", "memory": "0"}}
+```
+
+Every key is present and every quantity is zero. The Go check used `IsZero()` and reported
+it; the policy tested `'memory' in limits` and did not. This was a known risk when KG-021
+was written — presence is not the same as a value — and no fixture happened to cover it.
+A real cluster did.
+
+`resource.Quantity` keeps its fields unexported, so CEL can see that a limit exists but not
+what it says:
+
+```
+container.resources.limits['memory']          => {{0 0} {<nil>} 0 DecimalSI}
+string(container.resources.limits['memory'])  => no matching overload for 'string'
+```
+
+`Container` scope therefore also exposes `limits` and `requests` as maps of strings, which
+`quantity()` parses back. That is a representation primitive in the same sense as
+`imageTag`: it makes an opaque type readable without deciding anything. KG-021 now reads:
+
+```
+'memory' in limits && quantity(limits['memory']).isGreaterThan(quantity('0'))
+```
+
+`sign()` would have been the obvious spelling but is declared without a member overload, so
+`isGreaterThan(quantity('0'))` is used instead.
+
+`internal/policy/shipped_policies_test.go` gained `TestZeroQuantitiesCountAsMissing` so the
+case stays covered. The golden file was left exactly as captured from the Go checks rather
+than regenerated, since regenerating it against the policies would defeat its purpose.
+
+## E8 — the deployed result
+
+`v0.8.1` carries the fix. Against the 194 findings captured from the Go checks under
+`v0.7.0`:
+
+```
+before (v0.7.0, Go checks): 194 findings
+after  (v0.8.1, CEL):       194 findings
+diff:                       IDENTICAL
+```
+
+Every id, severity, resource, suppression flag and message matches. Both `ScanException`
+objects still suppress the same three findings, which they would since they match on `id`
+and no id changed.
+
+**A broken check is inert, not contagious.** A `SecurityCheck` with `metadata.labals` was
+applied to the live cluster:
+
+```
+READY=False REASON=CompileFailed
+MESSAGE=violation: ERROR: <input>:1:25: undefined field 'labals'
+ | namespaceObject.metadata.labals.size() > 0
+ | ........................^
+```
+
+Every report kept its findings while it was present.
+
+**Changing a rule takes effect without a rebuild**, which is the whole point of the round.
+Patching KG-021's severity to `Low` and back, with no restart and no new image:
+
+```
+before:   C=0 H=17 M=30 L=0
+after:    C=0 H=17 M=25 L=5
+reverted: C=0 H=17 M=30 L=0
+```
+
+Editing a `SecurityCheck` rescans every manifest report, through the same fan-out
+`ScanException` uses.
+
+The manager reports no errors and no RBAC denials, and sits at 10m CPU and 41 Mi. The image
+is 77.4 MB against v0.7.0's 77.2 MB: **the entire CEL engine cost 0.2 MB**, because cel-go
+was already linked in through `k8s.io/apiserver`. That was the argument for choosing it
+over Rego, and it is now measured rather than asserted.

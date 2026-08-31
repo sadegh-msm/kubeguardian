@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 
 	securityv1alpha1 "github.com/sadegh-msm/kubeguardian/api/v1alpha1"
@@ -113,3 +116,56 @@ func TestShippedPoliciesProduceTheExpectedFindings(t *testing.T) {
 }
 
 var _ = snapshot.Snapshot{}
+
+// TestZeroQuantitiesCountAsMissing covers a case the fixtures did not and the
+// live cluster did: a container whose limits and requests are all present but
+// set to "0". Testing presence alone let it pass, where the Go check this
+// replaced treated a zero quantity as missing. A quantity of zero is not a
+// limit, so the finding must fire.
+func TestZeroQuantitiesCountAsMissing(t *testing.T) {
+	zero := corev1.Container{
+		Name:  testContainer,
+		Image: "nginx:1.27",
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("0"),
+				corev1.ResourceMemory: resource.MustParse("0"),
+			},
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("0"),
+				corev1.ResourceMemory: resource.MustParse("0"),
+			},
+		},
+	}
+
+	snap := &snapshot.Snapshot{
+		Namespace:   namespaceWith(nil),
+		Deployments: []appsv1.Deployment{deploymentWith("uptime", []corev1.Container{zero}, corev1.PodSpec{})},
+	}
+
+	var found *securityv1alpha1.Finding
+	for _, check := range loadPolicies(t) {
+		if check.Spec.ID != "KG-021" {
+			continue
+		}
+		compiled, err := Compile(check.Spec)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		findings, err := Evaluate(compiled, snap)
+		if err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if len(findings) == 1 {
+			found = &findings[0]
+		}
+	}
+
+	if found == nil {
+		t.Fatal("a container with every quantity set to 0 must still be reported as missing them")
+	}
+	want := `is missing memory limit, cpu request and memory request`
+	if !strings.Contains(found.Message, want) {
+		t.Fatalf("got %q, want it to contain %q", found.Message, want)
+	}
+}

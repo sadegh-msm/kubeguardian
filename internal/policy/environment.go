@@ -68,6 +68,12 @@ const (
 	variableImageTag       = "imageTag"
 	variableImageDigest    = "imageDigest"
 	variableContainerIndex = "containerIndex"
+
+	// resource.Quantity keeps its fields unexported, so CEL can see that a limit
+	// exists but not what it says. These expose the same two maps with the
+	// quantities as strings, which quantity() parses back.
+	variableLimits   = "limits"
+	variableRequests = "requests"
 )
 
 func typeNameOf[T any]() string {
@@ -111,6 +117,8 @@ func newEnv(scope securityv1alpha1.Scope) (*cel.Env, error) {
 			cel.Variable(variableImageTag, cel.StringType),
 			cel.Variable(variableImageDigest, cel.StringType),
 			cel.Variable(variableContainerIndex, cel.IntType),
+			cel.Variable(variableLimits, cel.MapType(cel.StringType, cel.StringType)),
+			cel.Variable(variableRequests, cel.MapType(cel.StringType, cel.StringType)),
 		)
 	case securityv1alpha1.ScopeRole:
 		options = append(options, cel.Variable(variableRole, cel.ObjectType(typeNameOf[rbacv1.Role]())))

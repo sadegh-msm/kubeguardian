@@ -198,6 +198,8 @@ func subjectsFor(scope securityv1alpha1.Scope, snap *snapshot.Snapshot) []subjec
 						variableImageTag:       tag,
 						variableImageDigest:    digest,
 						variableContainerIndex: containerIndex(workload, container),
+						variableLimits:         quantityStrings(container.Resources.Limits),
+						variableRequests:       quantityStrings(container.Resources.Requests),
 					},
 					reference: securityv1alpha1.ResourceRef{Kind: workload.Kind, Name: workload.Name, Container: container.Name},
 				})
@@ -245,6 +247,17 @@ func imageReference(image string) (tag string, digest string) {
 		return ref[colon+1:], ""
 	}
 	return "", ""
+}
+
+// quantityStrings renders a ResourceList in a form CEL can read. It is a
+// representation primitive, not a judgement: it says what the manifest says, and
+// the check decides whether a zero limit counts as a limit.
+func quantityStrings(list corev1.ResourceList) map[string]string {
+	out := make(map[string]string, len(list))
+	for name, quantity := range list {
+		out[string(name)] = quantity.String()
+	}
+	return out
 }
 
 func containerIndex(workload snapshot.Workload, target corev1.Container) int {
